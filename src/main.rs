@@ -193,6 +193,30 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Query detected issues from traces
+    Issues {
+        /// Time range (e.g., 15m, 1h, 24h)
+        #[arg(long, short, default_value = "1h")]
+        since: String,
+        /// Filter by namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Filter by workload
+        #[arg(long, short = 'w')]
+        workload: Option<String>,
+        /// Filter by issue description
+        #[arg(long, short = 'g')]
+        grep: Option<String>,
+        /// Filter by return code
+        #[arg(long)]
+        code: Option<String>,
+        /// Limit number of results
+        #[arg(long, short = 'n', default_value = "50")]
+        limit: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Grafana API commands
     Grafana {
         #[command(subcommand)]
@@ -745,6 +769,73 @@ async fn main() -> Result<()> {
                             parts[3],
                             parts[4],
                             parts[5]
+                        );
+                    }
+                }
+            }
+        }
+
+        Commands::Issues {
+            since,
+            namespace,
+            workload,
+            grep,
+            code,
+            limit,
+            json,
+        } => {
+            let client = get_client(&config).await?;
+            let duration = parse_duration(&since)?;
+
+            let mut conditions = vec![format!(
+                "last_seen > now() - INTERVAL '{}' SECOND",
+                duration.num_seconds()
+            )];
+
+            if let Some(ns) = namespace {
+                conditions.push(format!("namespace = '{}'", ns));
+            }
+            if let Some(w) = workload {
+                conditions.push(format!("workload LIKE '%{}%'", w));
+            }
+            if let Some(g) = grep {
+                conditions.push(format!("issue_description LIKE '%{}%'", g));
+            }
+            if let Some(c) = code {
+                conditions.push(format!("return_code = '{}'", c));
+            }
+
+            let sql = format!(
+                "SELECT last_seen, namespace, workload, issue_description, return_code, \
+                 sum(incident_count) as total_count \
+                 FROM traces_issues_list_one_minute_view \
+                 WHERE {} \
+                 GROUP BY last_seen, namespace, workload, issue_description, return_code \
+                 ORDER BY last_seen DESC \
+                 LIMIT {}",
+                conditions.join(" AND "),
+                limit
+            );
+
+            if json {
+                let result = client.query_clickhouse_json(&sql).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                println!("{:<24} {:<20} {:<25} {:<30} {:<8} {}",
+                    "LAST_SEEN", "NAMESPACE", "WORKLOAD", "ISSUE", "CODE", "COUNT");
+                println!("{}", "-".repeat(120));
+                for line in result.lines() {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    if parts.len() >= 6 {
+                        let null_to_dash = |s: &str| if s == "\\N" { "-".to_string() } else { s.to_string() };
+                        println!("{:<24} {:<20} {:<25} {:<30} {:<8} {}",
+                            parts[0],
+                            &parts[1][..20.min(parts[1].len())],
+                            &parts[2][..25.min(parts[2].len())],
+                            &parts[3][..30.min(parts[3].len())],
+                            null_to_dash(parts[4]),
+                            null_to_dash(parts[5])
                         );
                     }
                 }
