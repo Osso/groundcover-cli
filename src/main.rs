@@ -37,7 +37,7 @@ enum Commands {
         #[arg(long, short = 'w')]
         workload: Option<String>,
         /// Filter by namespace
-        #[arg(long, short)]
+        #[arg(long)]
         namespace: Option<String>,
         /// Filter by log level (info, warn, error)
         #[arg(long, short)]
@@ -82,13 +82,13 @@ enum Commands {
         #[arg(long, short, default_value = "1h")]
         since: String,
         /// Filter by namespace
-        #[arg(long, short)]
+        #[arg(long)]
         namespace: Option<String>,
         /// Filter by event type (Normal, Warning)
         #[arg(long, short = 't')]
         event_type: Option<String>,
         /// Filter by reason
-        #[arg(long, short)]
+        #[arg(long)]
         reason: Option<String>,
         /// Limit number of results
         #[arg(long, short = 'n', default_value = "100")]
@@ -122,7 +122,7 @@ enum Commands {
     /// List available tables in ClickHouse
     Tables,
     /// List API endpoints with metrics
-    Apis {
+    Api {
         /// Filter by namespace
         #[arg(long)]
         namespace: Option<String>,
@@ -345,11 +345,10 @@ async fn main() -> Result<()> {
         } => {
             let client = get_client(&config).await?;
             let duration = parse_duration(&since)?;
-            let since_ts = Utc::now() - duration;
 
             let mut conditions = vec![format!(
-                "timestamp > '{}'",
-                since_ts.format("%Y-%m-%d %H:%M:%S")
+                "timestamp > now() - INTERVAL '{}' SECOND",
+                duration.num_seconds()
             )];
 
             if let Some(w) = workload {
@@ -362,11 +361,11 @@ async fn main() -> Result<()> {
                 conditions.push(format!("level = '{}'", l.to_uppercase()));
             }
             if let Some(g) = grep {
-                conditions.push(format!("message LIKE '%{}%'", g));
+                conditions.push(format!("body LIKE '%{}%'", g));
             }
 
             let sql = format!(
-                "SELECT timestamp, namespace, workload, level, message FROM logs WHERE {} ORDER BY timestamp DESC LIMIT {}",
+                "SELECT timestamp, namespace, workload, level, body FROM logs WHERE {} ORDER BY timestamp DESC LIMIT {}",
                 conditions.join(" AND "),
                 limit
             );
@@ -540,7 +539,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Apis {
+        Commands::Api {
             namespace,
             workload,
             operation,
