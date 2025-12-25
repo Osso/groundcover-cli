@@ -121,6 +121,27 @@ enum Commands {
     },
     /// List available tables in ClickHouse
     Tables,
+    /// List API endpoints with metrics
+    Apis {
+        /// Filter by namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Filter by server/workload name
+        #[arg(long, short = 'w')]
+        workload: Option<String>,
+        /// Filter by operation name
+        #[arg(long, short)]
+        operation: Option<String>,
+        /// Only show APIs with errors
+        #[arg(long)]
+        errors: bool,
+        /// Limit number of results
+        #[arg(long, short = 'n', default_value = "50")]
+        limit: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// List workloads with metrics
     Workloads {
         /// Filter by namespace
@@ -516,6 +537,75 @@ async fn main() -> Result<()> {
             println!("Available tables:");
             for line in result.lines() {
                 println!("  {}", line);
+            }
+        }
+
+        Commands::Apis {
+            namespace,
+            workload,
+            operation,
+            errors,
+            limit,
+            json,
+        } => {
+            let client = get_client(&config).await?;
+
+            let mut conditions: Vec<String> = vec![];
+
+            if let Some(ns) = namespace {
+                conditions.push(format!("server_namespace = '{}'", ns));
+            }
+            if let Some(w) = workload {
+                conditions.push(format!("server LIKE '%{}%'", w));
+            }
+            if let Some(op) = operation {
+                conditions.push(format!("operation_name LIKE '%{}%'", op));
+            }
+            if errors {
+                conditions.push("error_rate > 0".to_string());
+            }
+
+            let where_clause = if conditions.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", conditions.join(" AND "))
+            };
+
+            let sql = format!(
+                "SELECT server_namespace, server, operation_name, \
+                 round(rps, 2) as rps, round(error_rate * 100, 2) as error_pct, \
+                 round(p50, 1) as p50_ms, round(p99, 1) as p99_ms \
+                 FROM apm_measurements_resource_refreshable_one_hour \
+                 {} \
+                 ORDER BY rps DESC NULLS LAST \
+                 LIMIT {}",
+                where_clause,
+                limit
+            );
+
+            if json {
+                let result = client.query_clickhouse_json(&sql).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                println!("{:<20} {:<25} {:<30} {:<10} {:<8} {:<8} {}",
+                    "NAMESPACE", "SERVICE", "OPERATION", "RPS", "ERR%", "P50ms", "P99ms");
+                println!("{}", "-".repeat(110));
+                for line in result.lines() {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    if parts.len() >= 7 {
+                        let null_to_dash = |s: &str| if s == "\\N" { "-".to_string() } else { s.to_string() };
+                        println!("{:<20} {:<25} {:<30} {:<10} {:<8} {:<8} {}",
+                            &parts[0][..20.min(parts[0].len())],
+                            &parts[1][..25.min(parts[1].len())],
+                            &parts[2][..30.min(parts[2].len())],
+                            null_to_dash(parts[3]),
+                            null_to_dash(parts[4]),
+                            null_to_dash(parts[5]),
+                            null_to_dash(parts[6])
+                        );
+                    }
+                }
             }
         }
 
