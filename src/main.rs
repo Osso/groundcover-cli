@@ -121,6 +121,30 @@ enum Commands {
     },
     /// List available tables in ClickHouse
     Tables,
+    /// List workloads with metrics
+    Workloads {
+        /// Filter by namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Filter by workload name
+        #[arg(long, short = 'w')]
+        workload: Option<String>,
+        /// Filter by kind (Deployment, StatefulSet, DaemonSet, etc.)
+        #[arg(long, short)]
+        kind: Option<String>,
+        /// Only show workloads with errors (error_rate > 0)
+        #[arg(long)]
+        errors: bool,
+        /// Only show not ready workloads
+        #[arg(long)]
+        not_ready: bool,
+        /// Limit number of results
+        #[arg(long, short = 'n', default_value = "50")]
+        limit: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Query alerts from ClickHouse
     Alerts {
         /// Time range (e.g., 15m, 1h, 24h)
@@ -492,6 +516,80 @@ async fn main() -> Result<()> {
             println!("Available tables:");
             for line in result.lines() {
                 println!("  {}", line);
+            }
+        }
+
+        Commands::Workloads {
+            namespace,
+            workload,
+            kind,
+            errors,
+            not_ready,
+            limit,
+            json,
+        } => {
+            let client = get_client(&config).await?;
+
+            let mut conditions: Vec<String> = vec![];
+
+            if let Some(ns) = namespace {
+                conditions.push(format!("namespace = '{}'", ns));
+            }
+            if let Some(w) = workload {
+                conditions.push(format!("workload LIKE '%{}%'", w));
+            }
+            if let Some(k) = kind {
+                conditions.push(format!("kind = '{}'", k));
+            }
+            if errors {
+                conditions.push("error_rate > 0".to_string());
+            }
+            if not_ready {
+                conditions.push("ready = false".to_string());
+            }
+
+            let where_clause = if conditions.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", conditions.join(" AND "))
+            };
+
+            let sql = format!(
+                "SELECT namespace, workload, kind, ready, pods_count, \
+                 round(rps, 2) as rps, round(error_rate * 100, 2) as error_pct, \
+                 round(p50, 1) as p50_ms, round(p99, 1) as p99_ms \
+                 FROM workloads_refreshable \
+                 {} \
+                 ORDER BY namespace, workload \
+                 LIMIT {}",
+                where_clause,
+                limit
+            );
+
+            if json {
+                let result = client.query_clickhouse_json(&sql).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                println!("{:<20} {:<30} {:<12} {:<6} {:<6} {:<8} {:<8} {:<8} {}",
+                    "NAMESPACE", "WORKLOAD", "KIND", "READY", "PODS", "RPS", "ERR%", "P50ms", "P99ms");
+                println!("{}", "-".repeat(120));
+                for line in result.lines() {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    if parts.len() >= 9 {
+                        println!("{:<20} {:<30} {:<12} {:<6} {:<6} {:<8} {:<8} {:<8} {}",
+                            parts[0],
+                            &parts[1][..30.min(parts[1].len())],
+                            parts[2],
+                            if parts[3] == "true" { "yes" } else { "no" },
+                            parts[4],
+                            parts[5],
+                            parts[6],
+                            parts[7],
+                            parts[8]
+                        );
+                    }
+                }
             }
         }
 
