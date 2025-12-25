@@ -121,6 +121,33 @@ enum Commands {
     },
     /// List available tables in ClickHouse
     Tables,
+    /// Query alerts from ClickHouse
+    Alerts {
+        /// Time range (e.g., 15m, 1h, 24h)
+        #[arg(long, short, default_value = "1h")]
+        since: String,
+        /// Filter by state (Normal, Pending, Alerting)
+        #[arg(long)]
+        state: Option<String>,
+        /// Filter by severity (S1, S2, S3, S4, S5)
+        #[arg(long)]
+        severity: Option<String>,
+        /// Filter by namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Filter by workload
+        #[arg(long, short = 'w')]
+        workload: Option<String>,
+        /// Filter by monitor name
+        #[arg(long, short = 'm')]
+        monitor: Option<String>,
+        /// Limit number of results
+        #[arg(long, short = 'n', default_value = "50")]
+        limit: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Grafana API commands
     Grafana {
         #[command(subcommand)]
@@ -465,6 +492,74 @@ async fn main() -> Result<()> {
             println!("Available tables:");
             for line in result.lines() {
                 println!("  {}", line);
+            }
+        }
+
+        Commands::Alerts {
+            since,
+            state,
+            severity,
+            namespace,
+            workload,
+            monitor,
+            limit,
+            json,
+        } => {
+            let client = get_client(&config).await?;
+            let duration = parse_duration(&since)?;
+
+            let mut conditions = vec![format!(
+                "timestamp > now() - INTERVAL '{}' SECOND",
+                duration.num_seconds()
+            )];
+
+            if let Some(s) = state {
+                conditions.push(format!("state = '{}'", s));
+            }
+            if let Some(sev) = severity {
+                conditions.push(format!("severity = '{}'", sev));
+            }
+            if let Some(ns) = namespace {
+                conditions.push(format!("namespace = '{}'", ns));
+            }
+            if let Some(w) = workload {
+                conditions.push(format!("workload LIKE '%{}%'", w));
+            }
+            if let Some(m) = monitor {
+                conditions.push(format!("monitor_name LIKE '%{}%'", m));
+            }
+
+            let sql = format!(
+                "SELECT timestamp, monitor_name, state, severity, namespace, workload \
+                 FROM monitor_state \
+                 WHERE {} \
+                 ORDER BY timestamp DESC \
+                 LIMIT {}",
+                conditions.join(" AND "),
+                limit
+            );
+
+            if json {
+                let result = client.query_clickhouse_json(&sql).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                println!("{:<24} {:<40} {:<10} {:<6} {:<20} {}",
+                    "TIMESTAMP", "MONITOR", "STATE", "SEV", "NAMESPACE", "WORKLOAD");
+                println!("{}", "-".repeat(120));
+                for line in result.lines() {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    if parts.len() >= 6 {
+                        println!("{:<24} {:<40} {:<10} {:<6} {:<20} {}",
+                            parts[0],
+                            &parts[1][..40.min(parts[1].len())],
+                            parts[2],
+                            parts[3],
+                            parts[4],
+                            parts[5]
+                        );
+                    }
+                }
             }
         }
 
