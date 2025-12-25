@@ -6,7 +6,7 @@ use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use std::process::Command;
 
-use client::Client;
+use client::{Client, GrafanaClient};
 use config::Config;
 
 #[derive(Parser)]
@@ -121,6 +121,29 @@ enum Commands {
     },
     /// List available tables in ClickHouse
     Tables,
+    /// Grafana API commands
+    Grafana {
+        #[command(subcommand)]
+        command: GrafanaCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum GrafanaCommands {
+    /// List all datasources
+    Datasources,
+    /// Get datasource by UID
+    Datasource {
+        /// Datasource UID
+        uid: String,
+    },
+    /// List dashboards
+    Dashboards,
+    /// Search dashboards
+    Search {
+        /// Search query
+        query: String,
+    },
 }
 
 fn parse_duration(s: &str) -> Result<Duration> {
@@ -140,6 +163,28 @@ fn parse_duration(s: &str) -> Result<Duration> {
     } else {
         bail!("Invalid duration format: {}. Use format like 15m, 1h, 24h, 7d", s);
     }
+}
+
+fn fetch_grafana_token_from_groundcover() -> Result<String> {
+    let output = Command::new("groundcover")
+        .args(["auth", "generate-service-account-token"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Failed to get Grafana token from groundcover CLI: {}", stderr);
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    // Token starts with "glsa_" and is on the last line
+    let token = stdout
+        .lines()
+        .rev()
+        .find(|line| line.trim().starts_with("glsa_"))
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| anyhow::anyhow!("Could not parse Grafana token from groundcover output: {}", stdout))?;
+
+    Ok(token)
 }
 
 fn fetch_api_key_from_groundcover() -> Result<String> {
@@ -185,8 +230,13 @@ async fn main() -> Result<()> {
                 eprintln!("Fetching API key from groundcover CLI...");
                 let key = fetch_api_key_from_groundcover()?;
                 config.api_key = Some(key);
+
+                eprintln!("Fetching Grafana token from groundcover CLI...");
+                let token = fetch_grafana_token_from_groundcover()?;
+                config.grafana_token = Some(token);
+
                 config.save()?;
-                println!("API key saved.");
+                println!("API key and Grafana token saved.");
             } else if let Some(key) = api_key {
                 config.api_key = Some(key);
                 config.save()?;
@@ -199,6 +249,14 @@ async fn main() -> Result<()> {
                         .api_key
                         .as_ref()
                         .map(|k| format!("{}...", &k[..12.min(k.len())]))
+                        .unwrap_or_else(|| "(not set)".to_string())
+                );
+                println!(
+                    "  grafana_token: {}",
+                    config
+                        .grafana_token
+                        .as_ref()
+                        .map(|k| format!("{}...", &k[..20.min(k.len())]))
                         .unwrap_or_else(|| "(not set)".to_string())
                 );
             }
@@ -407,6 +465,63 @@ async fn main() -> Result<()> {
             println!("Available tables:");
             for line in result.lines() {
                 println!("  {}", line);
+            }
+        }
+
+        Commands::Grafana { command } => {
+            let token = config
+                .get_grafana_token()
+                .ok_or_else(|| anyhow::anyhow!("No Grafana token configured. Run: groundcover-cli config --fetch"))?;
+            let client = GrafanaClient::new(token.to_string())?;
+
+            match command {
+                GrafanaCommands::Datasources => {
+                    let result = client.list_datasources().await?;
+                    if let Some(arr) = result.as_array() {
+                        println!("{:<40} {:<12} {}", "UID", "TYPE", "NAME");
+                        println!("{}", "-".repeat(80));
+                        for ds in arr {
+                            println!(
+                                "{:<40} {:<12} {}",
+                                ds["uid"].as_str().unwrap_or("?"),
+                                ds["type"].as_str().unwrap_or("?"),
+                                ds["name"].as_str().unwrap_or("?")
+                            );
+                        }
+                    }
+                }
+                GrafanaCommands::Datasource { uid } => {
+                    let result = client.get_datasource(&uid).await?;
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
+                GrafanaCommands::Dashboards => {
+                    let result = client.list_dashboards().await?;
+                    if let Some(arr) = result.as_array() {
+                        println!("{:<40} {}", "UID", "TITLE");
+                        println!("{}", "-".repeat(80));
+                        for db in arr {
+                            println!(
+                                "{:<40} {}",
+                                db["uid"].as_str().unwrap_or("?"),
+                                db["title"].as_str().unwrap_or("?")
+                            );
+                        }
+                    }
+                }
+                GrafanaCommands::Search { query } => {
+                    let result = client.search_dashboards(&query).await?;
+                    if let Some(arr) = result.as_array() {
+                        println!("{:<40} {}", "UID", "TITLE");
+                        println!("{}", "-".repeat(80));
+                        for db in arr {
+                            println!(
+                                "{:<40} {}",
+                                db["uid"].as_str().unwrap_or("?"),
+                                db["title"].as_str().unwrap_or("?")
+                            );
+                        }
+                    }
+                }
             }
         }
     }

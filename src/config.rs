@@ -6,6 +6,7 @@ use std::path::PathBuf;
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
     pub api_key: Option<String>,
+    pub grafana_token: Option<String>,
 }
 
 impl Config {
@@ -44,5 +45,9 @@ impl Config {
 
     pub fn get_api_key(&self) -> Option<&str> {
         self.api_key.as_deref()
+    }
+
+    pub fn get_grafana_token(&self) -> Option<&str> {
+        self.grafana_token.as_deref()
     }
 }

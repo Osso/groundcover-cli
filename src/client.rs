@@ -116,3 +116,57 @@ impl Client {
         Ok(value)
     }
 }
+
+const GRAFANA_BASE_URL: &str = "https://app.groundcover.com/grafana";
+
+pub struct GrafanaClient {
+    http: HttpClient,
+    token: String,
+}
+
+impl GrafanaClient {
+    pub fn new(token: String) -> Result<Self> {
+        let http = HttpClient::builder()
+            .build()
+            .context("Failed to create HTTP client")?;
+        Ok(Self { http, token })
+    }
+
+    async fn get(&self, path: &str) -> Result<Value> {
+        let url = format!("{}{}", GRAFANA_BASE_URL, path);
+        let response = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .send()
+            .await
+            .context("Failed to send Grafana request")?;
+
+        let status = response.status();
+        let text = response.text().await?;
+
+        if !status.is_success() {
+            anyhow::bail!("Grafana request failed ({}): {}", status, text);
+        }
+
+        let value: Value = serde_json::from_str(&text)
+            .with_context(|| format!("Failed to parse Grafana response: {}", text))?;
+        Ok(value)
+    }
+
+    pub async fn list_datasources(&self) -> Result<Value> {
+        self.get("/api/datasources").await
+    }
+
+    pub async fn get_datasource(&self, uid: &str) -> Result<Value> {
+        self.get(&format!("/api/datasources/uid/{}", uid)).await
+    }
+
+    pub async fn list_dashboards(&self) -> Result<Value> {
+        self.get("/api/search?type=dash-db").await
+    }
+
+    pub async fn search_dashboards(&self, query: &str) -> Result<Value> {
+        self.get(&format!("/api/search?type=dash-db&query={}", urlencoding::encode(query))).await
+    }
+}
