@@ -1,0 +1,415 @@
+mod client;
+mod config;
+
+use anyhow::{bail, Result};
+use chrono::{Duration, Utc};
+use clap::{Parser, Subcommand};
+use std::process::Command;
+
+use client::Client;
+use config::Config;
+
+#[derive(Parser)]
+#[command(name = "groundcover-cli")]
+#[command(about = "Groundcover CLI - query logs, traces, and metrics")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Configure API key
+    Config {
+        /// Set API key directly
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Fetch API key from groundcover CLI
+        #[arg(long)]
+        fetch: bool,
+    },
+    /// Query logs from ClickHouse
+    Logs {
+        /// Time range (e.g., 15m, 1h, 24h)
+        #[arg(long, short, default_value = "15m")]
+        since: String,
+        /// Filter by service/workload name
+        #[arg(long, short = 'w')]
+        workload: Option<String>,
+        /// Filter by namespace
+        #[arg(long, short)]
+        namespace: Option<String>,
+        /// Filter by log level (info, warn, error)
+        #[arg(long, short)]
+        level: Option<String>,
+        /// Search text pattern
+        #[arg(long, short = 'g')]
+        grep: Option<String>,
+        /// Limit number of results
+        #[arg(long, short = 'n', default_value = "100")]
+        limit: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Query traces from ClickHouse
+    Traces {
+        /// Time range (e.g., 15m, 1h, 24h)
+        #[arg(long, short, default_value = "15m")]
+        since: String,
+        /// Filter by service name
+        #[arg(long, short = 'w')]
+        workload: Option<String>,
+        /// Filter by operation/endpoint
+        #[arg(long, short)]
+        operation: Option<String>,
+        /// Filter by minimum duration in ms
+        #[arg(long)]
+        min_duration: Option<u64>,
+        /// Filter by status (ok, error)
+        #[arg(long)]
+        status: Option<String>,
+        /// Limit number of results
+        #[arg(long, short = 'n', default_value = "50")]
+        limit: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Query Kubernetes events from ClickHouse
+    Events {
+        /// Time range (e.g., 15m, 1h, 24h)
+        #[arg(long, short, default_value = "1h")]
+        since: String,
+        /// Filter by namespace
+        #[arg(long, short)]
+        namespace: Option<String>,
+        /// Filter by event type (Normal, Warning)
+        #[arg(long, short = 't')]
+        event_type: Option<String>,
+        /// Filter by reason
+        #[arg(long, short)]
+        reason: Option<String>,
+        /// Limit number of results
+        #[arg(long, short = 'n', default_value = "100")]
+        limit: u32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Query metrics from VictoriaMetrics using PromQL
+    Metrics {
+        /// PromQL query
+        query: String,
+        /// Time range (e.g., 15m, 1h, 24h)
+        #[arg(long, short, default_value = "1h")]
+        since: String,
+        /// Step interval (e.g., 15s, 1m, 5m)
+        #[arg(long, default_value = "60s")]
+        step: String,
+        /// Output as JSON (default is table)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Execute raw ClickHouse SQL query
+    SqlClickhouse {
+        /// SQL query to execute
+        query: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List available tables in ClickHouse
+    Tables,
+}
+
+fn parse_duration(s: &str) -> Result<Duration> {
+    let s = s.trim();
+    if s.ends_with('m') {
+        let mins: i64 = s.trim_end_matches('m').parse()?;
+        Ok(Duration::minutes(mins))
+    } else if s.ends_with('h') {
+        let hours: i64 = s.trim_end_matches('h').parse()?;
+        Ok(Duration::hours(hours))
+    } else if s.ends_with('d') {
+        let days: i64 = s.trim_end_matches('d').parse()?;
+        Ok(Duration::days(days))
+    } else if s.ends_with('s') {
+        let secs: i64 = s.trim_end_matches('s').parse()?;
+        Ok(Duration::seconds(secs))
+    } else {
+        bail!("Invalid duration format: {}. Use format like 15m, 1h, 24h, 7d", s);
+    }
+}
+
+fn fetch_api_key_from_groundcover() -> Result<String> {
+    let output = Command::new("groundcover")
+        .args(["auth", "get-datasources-api-key"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Failed to get API key from groundcover CLI: {}", stderr);
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    // The API key is on the last non-empty line, contains only alphanumeric chars
+    let key = stdout
+        .lines()
+        .rev()
+        .find(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| anyhow::anyhow!("Could not parse API key from groundcover output: {}", stdout))?;
+
+    Ok(key)
+}
+
+async fn get_client(config: &Config) -> Result<Client> {
+    let api_key = config
+        .get_api_key()
+        .ok_or_else(|| anyhow::anyhow!("No API key configured. Run: groundcover-cli config --fetch"))?;
+    Client::new(api_key.to_string())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let mut config = Config::load()?;
+
+    match cli.command {
+        Commands::Config { api_key, fetch } => {
+            if fetch {
+                eprintln!("Fetching API key from groundcover CLI...");
+                let key = fetch_api_key_from_groundcover()?;
+                config.api_key = Some(key);
+                config.save()?;
+                println!("API key saved.");
+            } else if let Some(key) = api_key {
+                config.api_key = Some(key);
+                config.save()?;
+                println!("API key saved.");
+            } else {
+                println!("Current configuration:");
+                println!(
+                    "  api_key: {}",
+                    config
+                        .api_key
+                        .as_ref()
+                        .map(|k| format!("{}...", &k[..12.min(k.len())]))
+                        .unwrap_or_else(|| "(not set)".to_string())
+                );
+            }
+        }
+
+        Commands::Logs {
+            since,
+            workload,
+            namespace,
+            level,
+            grep,
+            limit,
+            json,
+        } => {
+            let client = get_client(&config).await?;
+            let duration = parse_duration(&since)?;
+            let since_ts = Utc::now() - duration;
+
+            let mut conditions = vec![format!(
+                "timestamp > '{}'",
+                since_ts.format("%Y-%m-%d %H:%M:%S")
+            )];
+
+            if let Some(w) = workload {
+                conditions.push(format!("workload LIKE '%{}%'", w));
+            }
+            if let Some(ns) = namespace {
+                conditions.push(format!("namespace = '{}'", ns));
+            }
+            if let Some(l) = level {
+                conditions.push(format!("level = '{}'", l.to_uppercase()));
+            }
+            if let Some(g) = grep {
+                conditions.push(format!("message LIKE '%{}%'", g));
+            }
+
+            let sql = format!(
+                "SELECT timestamp, namespace, workload, level, message FROM logs WHERE {} ORDER BY timestamp DESC LIMIT {}",
+                conditions.join(" AND "),
+                limit
+            );
+
+            if json {
+                let result = client.query_clickhouse_json(&sql).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                for line in result.lines() {
+                    println!("{}", line);
+                }
+            }
+        }
+
+        Commands::Traces {
+            since,
+            workload,
+            operation,
+            min_duration,
+            status,
+            limit,
+            json,
+        } => {
+            let client = get_client(&config).await?;
+            let duration = parse_duration(&since)?;
+
+            let mut conditions = vec![format!(
+                "start_timestamp > now() - INTERVAL '{}' SECOND",
+                duration.num_seconds()
+            )];
+
+            if let Some(w) = workload {
+                conditions.push(format!("service_name LIKE '%{}%'", w));
+            }
+            if let Some(op) = operation {
+                conditions.push(format!("operation LIKE '%{}%'", op));
+            }
+            if let Some(min_dur) = min_duration {
+                conditions.push(format!("duration_ms >= {}", min_dur));
+            }
+            if let Some(s) = status {
+                if s == "error" {
+                    conditions.push("status_code != 0".to_string());
+                } else if s == "ok" {
+                    conditions.push("status_code = 0".to_string());
+                }
+            }
+
+            let sql = format!(
+                "SELECT start_timestamp, service_name, operation, duration_ms, status_code FROM traces WHERE {} ORDER BY start_timestamp DESC LIMIT {}",
+                conditions.join(" AND "),
+                limit
+            );
+
+            if json {
+                let result = client.query_clickhouse_json(&sql).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                for line in result.lines() {
+                    println!("{}", line);
+                }
+            }
+        }
+
+        Commands::Events {
+            since,
+            namespace,
+            event_type,
+            reason,
+            limit,
+            json,
+        } => {
+            let client = get_client(&config).await?;
+            let duration = parse_duration(&since)?;
+
+            let mut conditions = vec![format!(
+                "timestamp > now() - INTERVAL '{}' SECOND",
+                duration.num_seconds()
+            )];
+
+            if let Some(ns) = namespace {
+                conditions.push(format!("namespace = '{}'", ns));
+            }
+            if let Some(t) = event_type {
+                conditions.push(format!("type = '{}'", t));
+            }
+            if let Some(r) = reason {
+                conditions.push(format!("reason LIKE '%{}%'", r));
+            }
+
+            let sql = format!(
+                "SELECT timestamp, namespace, type, reason, message FROM k8s_events WHERE {} ORDER BY timestamp DESC LIMIT {}",
+                conditions.join(" AND "),
+                limit
+            );
+
+            if json {
+                let result = client.query_clickhouse_json(&sql).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                for line in result.lines() {
+                    println!("{}", line);
+                }
+            }
+        }
+
+        Commands::Metrics { query, since, step, json: json_output } => {
+            let client = get_client(&config).await?;
+            let duration = parse_duration(&since)?;
+            let now = Utc::now();
+            let start = now - duration;
+
+            let result = client
+                .query_metrics(&query, start.timestamp(), now.timestamp(), Some(&step))
+                .await?;
+
+            if json_output {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                // Print metrics in a readable format
+                if let Some(data) = result.get("data").and_then(|d| d.get("result")) {
+                    if let Some(arr) = data.as_array() {
+                        for series in arr {
+                            if let Some(metric) = series.get("metric") {
+                                println!("Metric: {}", metric);
+                            }
+                            if let Some(values) = series.get("values").and_then(|v| v.as_array()) {
+                                for val in values.iter().take(10) {
+                                    if let Some(arr) = val.as_array() {
+                                        if arr.len() >= 2 {
+                                            let ts = arr[0].as_f64().unwrap_or(0.0);
+                                            let v = arr[1].as_str().unwrap_or("?");
+                                            println!("  {}: {}", ts as i64, v);
+                                        }
+                                    }
+                                }
+                                if values.len() > 10 {
+                                    println!("  ... and {} more values", values.len() - 10);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
+            }
+        }
+
+        Commands::SqlClickhouse { query, json } => {
+            let client = get_client(&config).await?;
+            if json {
+                let result = client.query_clickhouse_json(&query).await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                let result = client.query_clickhouse(&query).await?;
+                println!("{}", result);
+            }
+        }
+
+        Commands::Tables => {
+            let client = get_client(&config).await?;
+            let result = client
+                .query_clickhouse("SHOW TABLES FORMAT TabSeparated")
+                .await?;
+            println!("Available tables:");
+            for line in result.lines() {
+                println!("  {}", line);
+            }
+        }
+    }
+
+    Ok(())
+}
