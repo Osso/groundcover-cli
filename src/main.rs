@@ -560,7 +560,7 @@ async fn main() -> Result<()> {
                  round(p50, 1) as p50_ms, round(p99, 1) as p99_ms \
                  FROM workloads_refreshable \
                  {} \
-                 ORDER BY namespace, workload \
+                 ORDER BY rps DESC NULLS LAST \
                  LIMIT {}",
                 where_clause,
                 limit
@@ -577,16 +577,17 @@ async fn main() -> Result<()> {
                 for line in result.lines() {
                     let parts: Vec<&str> = line.split('\t').collect();
                     if parts.len() >= 9 {
+                        let null_to_dash = |s: &str| if s == "\\N" { "-".to_string() } else { s.to_string() };
                         println!("{:<20} {:<30} {:<12} {:<6} {:<6} {:<8} {:<8} {:<8} {}",
                             parts[0],
                             &parts[1][..30.min(parts[1].len())],
                             parts[2],
                             if parts[3] == "true" { "yes" } else { "no" },
-                            parts[4],
-                            parts[5],
-                            parts[6],
-                            parts[7],
-                            parts[8]
+                            null_to_dash(parts[4]),
+                            null_to_dash(parts[5]),
+                            null_to_dash(parts[6]),
+                            null_to_dash(parts[7]),
+                            null_to_dash(parts[8])
                         );
                     }
                 }
