@@ -129,9 +129,9 @@ enum Commands {
         /// Filter by server/workload name
         #[arg(long, short = 'w')]
         workload: Option<String>,
-        /// Filter by operation name
-        #[arg(long, short)]
-        operation: Option<String>,
+        /// Filter by endpoint (e.g., /api/users)
+        #[arg(long, short = 'e')]
+        endpoint: Option<String>,
         /// Only show APIs with errors
         #[arg(long)]
         errors: bool,
@@ -542,7 +542,7 @@ async fn main() -> Result<()> {
         Commands::Api {
             namespace,
             workload,
-            operation,
+            endpoint,
             errors,
             limit,
             json,
@@ -557,8 +557,8 @@ async fn main() -> Result<()> {
             if let Some(w) = workload {
                 conditions.push(format!("server LIKE '%{}%'", w));
             }
-            if let Some(op) = operation {
-                conditions.push(format!("operation_name LIKE '%{}%'", op));
+            if let Some(ep) = endpoint {
+                conditions.push(format!("span_name LIKE '%{}%'", ep));
             }
             if errors {
                 conditions.push("error_rate > 0".to_string());
@@ -571,7 +571,7 @@ async fn main() -> Result<()> {
             };
 
             let sql = format!(
-                "SELECT server_namespace, server, operation_name, \
+                "SELECT server_namespace, server, span_name, \
                  round(rps, 2) as rps, round(error_rate * 100, 2) as error_pct, \
                  round(p50, 1) as p50_ms, round(p99, 1) as p99_ms \
                  FROM apm_measurements_resource_refreshable_one_hour \
@@ -587,17 +587,17 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
-                println!("{:<20} {:<25} {:<30} {:<10} {:<8} {:<8} {}",
-                    "NAMESPACE", "SERVICE", "OPERATION", "RPS", "ERR%", "P50ms", "P99ms");
-                println!("{}", "-".repeat(110));
+                println!("{:<20} {:<25} {:<50} {:<10} {:<8} {:<8} {}",
+                    "NAMESPACE", "SERVICE", "ENDPOINT", "RPS", "ERR%", "P50ms", "P99ms");
+                println!("{}", "-".repeat(130));
                 for line in result.lines() {
                     let parts: Vec<&str> = line.split('\t').collect();
                     if parts.len() >= 7 {
                         let null_to_dash = |s: &str| if s == "\\N" { "-".to_string() } else { s.to_string() };
-                        println!("{:<20} {:<25} {:<30} {:<10} {:<8} {:<8} {}",
+                        println!("{:<20} {:<25} {:<50} {:<10} {:<8} {:<8} {}",
                             &parts[0][..20.min(parts[0].len())],
                             &parts[1][..25.min(parts[1].len())],
-                            &parts[2][..30.min(parts[2].len())],
+                            &parts[2][..50.min(parts[2].len())],
                             null_to_dash(parts[3]),
                             null_to_dash(parts[4]),
                             null_to_dash(parts[5]),
