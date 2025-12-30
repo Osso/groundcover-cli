@@ -1,5 +1,9 @@
 # groundcover-cli
 
+[![CI](https://github.com/Osso/groundcover-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Osso/groundcover-cli/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/Osso/groundcover-cli)](https://github.com/Osso/groundcover-cli/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 CLI for querying [Groundcover](https://groundcover.com) observability data - logs, traces, metrics, issues, and alerts.
 
 ## Installation
