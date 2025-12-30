@@ -62,7 +62,10 @@ impl Client {
         step: Option<&str>,
     ) -> Result<Value> {
         let step = step.unwrap_or("60s");
-        let url = format!("{}/datasources/prometheus/api/v1/query_range", DATASOURCE_BASE_URL);
+        let url = format!(
+            "{}/datasources/prometheus/api/v1/query_range",
+            DATASOURCE_BASE_URL
+        );
 
         let response = self
             .http
@@ -93,7 +96,10 @@ impl Client {
     /// Query VictoriaMetrics instant query
     #[allow(dead_code)]
     pub async fn query_metrics_instant(&self, query: &str) -> Result<Value> {
-        let url = format!("{}/datasources/prometheus/api/v1/query", DATASOURCE_BASE_URL);
+        let url = format!(
+            "{}/datasources/prometheus/api/v1/query",
+            DATASOURCE_BASE_URL
+        );
 
         let response = self
             .http
@@ -167,6 +173,10 @@ impl GrafanaClient {
     }
 
     pub async fn search_dashboards(&self, query: &str) -> Result<Value> {
-        self.get(&format!("/api/search?type=dash-db&query={}", urlencoding::encode(query))).await
+        self.get(&format!(
+            "/api/search?type=dash-db&query={}",
+            urlencoding::encode(query)
+        ))
+        .await
     }
 }

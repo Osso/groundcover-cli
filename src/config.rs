@@ -26,8 +26,8 @@ impl Config {
         if path.exists() {
             let content = fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read config from {}", path.display()))?;
-            let config: Config = serde_json::from_str(&content)
-                .with_context(|| "Failed to parse config")?;
+            let config: Config =
+                serde_json::from_str(&content).with_context(|| "Failed to parse config")?;
             Ok(config)
         } else {
             Ok(Config::default())

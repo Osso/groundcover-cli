@@ -1,7 +1,7 @@
 mod client;
 mod config;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use std::process::Command;
@@ -257,7 +257,10 @@ fn parse_duration(s: &str) -> Result<Duration> {
         let secs: i64 = s.trim_end_matches('s').parse()?;
         Ok(Duration::seconds(secs))
     } else {
-        bail!("Invalid duration format: {}. Use format like 15m, 1h, 24h, 7d", s);
+        bail!(
+            "Invalid duration format: {}. Use format like 15m, 1h, 24h, 7d",
+            s
+        );
     }
 }
 
@@ -268,7 +271,10 @@ fn fetch_grafana_token_from_groundcover() -> Result<String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Failed to get Grafana token from groundcover CLI: {}", stderr);
+        bail!(
+            "Failed to get Grafana token from groundcover CLI: {}",
+            stderr
+        );
     }
 
     let stdout = String::from_utf8(output.stdout)?;
@@ -278,7 +284,12 @@ fn fetch_grafana_token_from_groundcover() -> Result<String> {
         .rev()
         .find(|line| line.trim().starts_with("glsa_"))
         .map(|s| s.trim().to_string())
-        .ok_or_else(|| anyhow::anyhow!("Could not parse Grafana token from groundcover output: {}", stdout))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not parse Grafana token from groundcover output: {}",
+                stdout
+            )
+        })?;
 
     Ok(token)
 }
@@ -303,15 +314,20 @@ fn fetch_api_key_from_groundcover() -> Result<String> {
             !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphanumeric())
         })
         .map(|s| s.trim().to_string())
-        .ok_or_else(|| anyhow::anyhow!("Could not parse API key from groundcover output: {}", stdout))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not parse API key from groundcover output: {}",
+                stdout
+            )
+        })?;
 
     Ok(key)
 }
 
 async fn get_client(config: &Config) -> Result<Client> {
-    let api_key = config
-        .get_api_key()
-        .ok_or_else(|| anyhow::anyhow!("No API key configured. Run: groundcover-cli config --fetch"))?;
+    let api_key = config.get_api_key().ok_or_else(|| {
+        anyhow::anyhow!("No API key configured. Run: groundcover-cli config --fetch")
+    })?;
     Client::new(api_key.to_string())
 }
 
@@ -398,7 +414,9 @@ async fn main() -> Result<()> {
                 let result = client.query_clickhouse_json(&sql).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                let result = client
+                    .query_clickhouse(&format!("{} FORMAT TabSeparated", sql))
+                    .await?;
                 for line in result.lines() {
                     println!("{}", line);
                 }
@@ -449,7 +467,9 @@ async fn main() -> Result<()> {
                 let result = client.query_clickhouse_json(&sql).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                let result = client
+                    .query_clickhouse(&format!("{} FORMAT TabSeparated", sql))
+                    .await?;
                 for line in result.lines() {
                     println!("{}", line);
                 }
@@ -492,14 +512,21 @@ async fn main() -> Result<()> {
                 let result = client.query_clickhouse_json(&sql).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
+                let result = client
+                    .query_clickhouse(&format!("{} FORMAT TabSeparated", sql))
+                    .await?;
                 for line in result.lines() {
                     println!("{}", line);
                 }
             }
         }
 
-        Commands::Metrics { query, since, step, json: json_output } => {
+        Commands::Metrics {
+            query,
+            since,
+            step,
+            json: json_output,
+        } => {
             let client = get_client(&config).await?;
             let duration = parse_duration(&since)?;
             let now = Utc::now();
@@ -602,23 +629,33 @@ async fn main() -> Result<()> {
                  {} \
                  ORDER BY rps DESC NULLS LAST \
                  LIMIT {}",
-                where_clause,
-                limit
+                where_clause, limit
             );
 
             if json {
                 let result = client.query_clickhouse_json(&sql).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
-                println!("{:<20} {:<25} {:<50} {:<10} {:<8} {:<8} {}",
-                    "NAMESPACE", "SERVICE", "ENDPOINT", "RPS", "ERR%", "P50ms", "P99ms");
+                let result = client
+                    .query_clickhouse(&format!("{} FORMAT TabSeparated", sql))
+                    .await?;
+                println!(
+                    "{:<20} {:<25} {:<50} {:<10} {:<8} {:<8} {}",
+                    "NAMESPACE", "SERVICE", "ENDPOINT", "RPS", "ERR%", "P50ms", "P99ms"
+                );
                 println!("{}", "-".repeat(130));
                 for line in result.lines() {
                     let parts: Vec<&str> = line.split('\t').collect();
                     if parts.len() >= 7 {
-                        let null_to_dash = |s: &str| if s == "\\N" { "-".to_string() } else { s.to_string() };
-                        println!("{:<20} {:<25} {:<50} {:<10} {:<8} {:<8} {}",
+                        let null_to_dash = |s: &str| {
+                            if s == "\\N" {
+                                "-".to_string()
+                            } else {
+                                s.to_string()
+                            }
+                        };
+                        println!(
+                            "{:<20} {:<25} {:<50} {:<10} {:<8} {:<8} {}",
                             &parts[0][..20.min(parts[0].len())],
                             &parts[1][..25.min(parts[1].len())],
                             &parts[2][..50.min(parts[2].len())],
@@ -675,23 +712,41 @@ async fn main() -> Result<()> {
                  {} \
                  ORDER BY rps DESC NULLS LAST \
                  LIMIT {}",
-                where_clause,
-                limit
+                where_clause, limit
             );
 
             if json {
                 let result = client.query_clickhouse_json(&sql).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
-                println!("{:<20} {:<30} {:<12} {:<6} {:<6} {:<8} {:<8} {:<8} {}",
-                    "NAMESPACE", "WORKLOAD", "KIND", "READY", "PODS", "RPS", "ERR%", "P50ms", "P99ms");
+                let result = client
+                    .query_clickhouse(&format!("{} FORMAT TabSeparated", sql))
+                    .await?;
+                println!(
+                    "{:<20} {:<30} {:<12} {:<6} {:<6} {:<8} {:<8} {:<8} {}",
+                    "NAMESPACE",
+                    "WORKLOAD",
+                    "KIND",
+                    "READY",
+                    "PODS",
+                    "RPS",
+                    "ERR%",
+                    "P50ms",
+                    "P99ms"
+                );
                 println!("{}", "-".repeat(120));
                 for line in result.lines() {
                     let parts: Vec<&str> = line.split('\t').collect();
                     if parts.len() >= 9 {
-                        let null_to_dash = |s: &str| if s == "\\N" { "-".to_string() } else { s.to_string() };
-                        println!("{:<20} {:<30} {:<12} {:<6} {:<6} {:<8} {:<8} {:<8} {}",
+                        let null_to_dash = |s: &str| {
+                            if s == "\\N" {
+                                "-".to_string()
+                            } else {
+                                s.to_string()
+                            }
+                        };
+                        println!(
+                            "{:<20} {:<30} {:<12} {:<6} {:<6} {:<8} {:<8} {:<8} {}",
                             parts[0],
                             &parts[1][..30.min(parts[1].len())],
                             parts[2],
@@ -755,14 +810,19 @@ async fn main() -> Result<()> {
                 let result = client.query_clickhouse_json(&sql).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
-                println!("{:<24} {:<40} {:<10} {:<6} {:<20} {}",
-                    "TIMESTAMP", "MONITOR", "STATE", "SEV", "NAMESPACE", "WORKLOAD");
+                let result = client
+                    .query_clickhouse(&format!("{} FORMAT TabSeparated", sql))
+                    .await?;
+                println!(
+                    "{:<24} {:<40} {:<10} {:<6} {:<20} {}",
+                    "TIMESTAMP", "MONITOR", "STATE", "SEV", "NAMESPACE", "WORKLOAD"
+                );
                 println!("{}", "-".repeat(120));
                 for line in result.lines() {
                     let parts: Vec<&str> = line.split('\t').collect();
                     if parts.len() >= 6 {
-                        println!("{:<24} {:<40} {:<10} {:<6} {:<20} {}",
+                        println!(
+                            "{:<24} {:<40} {:<10} {:<6} {:<20} {}",
                             parts[0],
                             &parts[1][..40.min(parts[1].len())],
                             parts[2],
@@ -821,15 +881,26 @@ async fn main() -> Result<()> {
                 let result = client.query_clickhouse_json(&sql).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                let result = client.query_clickhouse(&format!("{} FORMAT TabSeparated", sql)).await?;
-                println!("{:<24} {:<20} {:<25} {:<30} {:<8} {}",
-                    "LAST_SEEN", "NAMESPACE", "WORKLOAD", "ISSUE", "CODE", "COUNT");
+                let result = client
+                    .query_clickhouse(&format!("{} FORMAT TabSeparated", sql))
+                    .await?;
+                println!(
+                    "{:<24} {:<20} {:<25} {:<30} {:<8} {}",
+                    "LAST_SEEN", "NAMESPACE", "WORKLOAD", "ISSUE", "CODE", "COUNT"
+                );
                 println!("{}", "-".repeat(120));
                 for line in result.lines() {
                     let parts: Vec<&str> = line.split('\t').collect();
                     if parts.len() >= 6 {
-                        let null_to_dash = |s: &str| if s == "\\N" { "-".to_string() } else { s.to_string() };
-                        println!("{:<24} {:<20} {:<25} {:<30} {:<8} {}",
+                        let null_to_dash = |s: &str| {
+                            if s == "\\N" {
+                                "-".to_string()
+                            } else {
+                                s.to_string()
+                            }
+                        };
+                        println!(
+                            "{:<24} {:<20} {:<25} {:<30} {:<8} {}",
                             parts[0],
                             &parts[1][..20.min(parts[1].len())],
                             &parts[2][..25.min(parts[2].len())],
@@ -843,9 +914,9 @@ async fn main() -> Result<()> {
         }
 
         Commands::Grafana { command } => {
-            let token = config
-                .get_grafana_token()
-                .ok_or_else(|| anyhow::anyhow!("No Grafana token configured. Run: groundcover-cli config --fetch"))?;
+            let token = config.get_grafana_token().ok_or_else(|| {
+                anyhow::anyhow!("No Grafana token configured. Run: groundcover-cli config --fetch")
+            })?;
             let client = GrafanaClient::new(token.to_string())?;
 
             match command {
