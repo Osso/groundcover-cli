@@ -240,6 +240,24 @@ enum GrafanaCommands {
         /// Search query
         query: String,
     },
+    /// List alert rules (provisioning API)
+    AlertRules {
+        /// Filter by title (case-insensitive substring match)
+        #[arg(long, short = 'f')]
+        filter: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List alert rules with state and query expressions (Ruler API)
+    Alerts {
+        /// Filter by title (case-insensitive substring match)
+        #[arg(long, short = 'f')]
+        filter: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn parse_duration(s: &str) -> Result<Duration> {
@@ -487,23 +505,27 @@ async fn main() -> Result<()> {
             let client = get_client(&config).await?;
             let duration = parse_duration(&since)?;
 
-            let mut conditions = vec![format!(
-                "timestamp > now() - INTERVAL '{}' SECOND",
-                duration.num_seconds()
-            )];
+            // Filter for actual K8s events (have k8s_reason populated)
+            let mut conditions = vec![
+                format!(
+                    "timestamp > now() - INTERVAL '{}' SECOND",
+                    duration.num_seconds()
+                ),
+                "length(k8s_reason) > 0".to_string(),
+            ];
 
             if let Some(ns) = namespace {
-                conditions.push(format!("namespace = '{}'", ns));
+                conditions.push(format!("entity_namespace = '{}'", ns));
             }
             if let Some(t) = event_type {
                 conditions.push(format!("type = '{}'", t));
             }
             if let Some(r) = reason {
-                conditions.push(format!("reason LIKE '%{}%'", r));
+                conditions.push(format!("k8s_reason LIKE '%{}%'", r));
             }
 
             let sql = format!(
-                "SELECT timestamp, namespace, type, reason, message FROM k8s_events WHERE {} ORDER BY timestamp DESC LIMIT {}",
+                "SELECT timestamp, entity_namespace, type, k8s_reason, k8s_message FROM events WHERE {} ORDER BY timestamp DESC LIMIT {}",
                 conditions.join(" AND "),
                 limit
             );
@@ -963,6 +985,139 @@ async fn main() -> Result<()> {
                                 "{:<40} {}",
                                 db["uid"].as_str().unwrap_or("?"),
                                 db["title"].as_str().unwrap_or("?")
+                            );
+                        }
+                    }
+                }
+                GrafanaCommands::AlertRules { filter, json } => {
+                    let result = client.list_alert_rules().await?;
+                    if let Some(arr) = result.as_array() {
+                        let filtered: Vec<_> = if let Some(f) = &filter {
+                            let f_lower = f.to_lowercase();
+                            arr.iter()
+                                .filter(|rule| {
+                                    rule["title"]
+                                        .as_str()
+                                        .map(|t| t.to_lowercase().contains(&f_lower))
+                                        .unwrap_or(false)
+                                })
+                                .collect()
+                        } else {
+                            arr.iter().collect()
+                        };
+
+                        if json {
+                            println!("{}", serde_json::to_string_pretty(&filtered)?);
+                        } else {
+                            println!(
+                                "{:<40} {:<20} {}",
+                                "UID", "FOLDER", "TITLE"
+                            );
+                            println!("{}", "-".repeat(100));
+                            for rule in &filtered {
+                                println!(
+                                    "{:<40} {:<20} {}",
+                                    rule["uid"].as_str().unwrap_or("?"),
+                                    rule["folderUID"].as_str().unwrap_or("?"),
+                                    rule["title"].as_str().unwrap_or("?")
+                                );
+                            }
+                        }
+                    }
+                }
+                GrafanaCommands::Alerts { filter, json } => {
+                    let result = client.get_ruler_rules().await?;
+                    // Ruler API returns: { "folder_name": [ { "name": "group_name", "rules": [...] } ] }
+                    let mut alerts: Vec<serde_json::Value> = Vec::new();
+
+                    if let Some(obj) = result.as_object() {
+                        for (folder_name, groups) in obj {
+                            if let Some(groups_arr) = groups.as_array() {
+                                for group in groups_arr {
+                                    if let Some(rules) = group.get("rules").and_then(|r| r.as_array()) {
+                                        for rule in rules {
+                                            let title = rule
+                                                .get("grafana_alert")
+                                                .and_then(|ga| ga.get("title"))
+                                                .and_then(|t| t.as_str())
+                                                .unwrap_or("?");
+
+                                            let state = rule
+                                                .get("state")
+                                                .and_then(|s| s.as_str())
+                                                .unwrap_or("?");
+
+                                            // Extract PromQL from data array
+                                            let expr = rule
+                                                .get("grafana_alert")
+                                                .and_then(|ga| ga.get("data"))
+                                                .and_then(|d| d.as_array())
+                                                .and_then(|arr| {
+                                                    arr.iter().find_map(|item| {
+                                                        item.get("model")
+                                                            .and_then(|m| m.get("expr"))
+                                                            .and_then(|e| e.as_str())
+                                                            .filter(|s| !s.is_empty())
+                                                    })
+                                                })
+                                                .unwrap_or("");
+
+                                            alerts.push(serde_json::json!({
+                                                "title": title,
+                                                "state": state,
+                                                "folder": folder_name,
+                                                "expr": expr
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Apply filter
+                    let filtered: Vec<_> = if let Some(f) = &filter {
+                        let f_lower = f.to_lowercase();
+                        alerts
+                            .iter()
+                            .filter(|a| {
+                                a["title"]
+                                    .as_str()
+                                    .map(|t| t.to_lowercase().contains(&f_lower))
+                                    .unwrap_or(false)
+                            })
+                            .collect()
+                    } else {
+                        alerts.iter().collect()
+                    };
+
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&filtered)?);
+                    } else {
+                        println!(
+                            "{:<10} {:<25} {:<40} {}",
+                            "STATE", "FOLDER", "TITLE", "EXPRESSION"
+                        );
+                        println!("{}", "-".repeat(120));
+                        for alert in &filtered {
+                            let title = alert["title"].as_str().unwrap_or("?");
+                            let title_truncated = if title.len() > 38 {
+                                format!("{}...", &title[..35])
+                            } else {
+                                title.to_string()
+                            };
+                            let expr = alert["expr"].as_str().unwrap_or("");
+                            let expr_truncated = if expr.len() > 45 {
+                                format!("{}...", &expr[..42])
+                            } else {
+                                expr.to_string()
+                            };
+                            println!(
+                                "{:<10} {:<25} {:<40} {}",
+                                alert["state"].as_str().unwrap_or("?"),
+                                &alert["folder"].as_str().unwrap_or("?")[..25.min(alert["folder"].as_str().unwrap_or("?").len())],
+                                title_truncated,
+                                expr_truncated
                             );
                         }
                     }

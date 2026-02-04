@@ -179,4 +179,13 @@ impl GrafanaClient {
         ))
         .await
     }
+
+    pub async fn list_alert_rules(&self) -> Result<Value> {
+        self.get("/api/v1/provisioning/alert-rules").await
+    }
+
+    /// Get alert rules from the Grafana Ruler API (includes state and query expressions)
+    pub async fn get_ruler_rules(&self) -> Result<Value> {
+        self.get("/api/ruler/grafana/api/v1/rules").await
+    }
 }
