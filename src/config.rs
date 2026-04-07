@@ -43,11 +43,11 @@ impl Config {
         Ok(())
     }
 
-    pub fn get_api_key(&self) -> Option<&str> {
+    pub fn api_key(&self) -> Option<&str> {
         self.api_key.as_deref()
     }
 
-    pub fn get_grafana_token(&self) -> Option<&str> {
+    pub fn grafana_token(&self) -> Option<&str> {
         self.grafana_token.as_deref()
     }
 }

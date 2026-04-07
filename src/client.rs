@@ -92,35 +92,6 @@ impl Client {
             .with_context(|| format!("Failed to parse metrics response: {}", text))?;
         Ok(value)
     }
-
-    /// Query VictoriaMetrics instant query
-    #[allow(dead_code)]
-    pub async fn query_metrics_instant(&self, query: &str) -> Result<Value> {
-        let url = format!(
-            "{}/datasources/prometheus/api/v1/query",
-            DATASOURCE_BASE_URL
-        );
-
-        let response = self
-            .http
-            .get(&url)
-            .header("apikey", &self.api_key)
-            .query(&[("query", query)])
-            .send()
-            .await
-            .context("Failed to send metrics query")?;
-
-        let status = response.status();
-        let text = response.text().await?;
-
-        if !status.is_success() {
-            anyhow::bail!("Metrics query failed ({}): {}", status, text);
-        }
-
-        let value: Value = serde_json::from_str(&text)
-            .with_context(|| format!("Failed to parse metrics response: {}", text))?;
-        Ok(value)
-    }
 }
 
 const GRAFANA_BASE_URL: &str = "https://app.groundcover.com/grafana";
