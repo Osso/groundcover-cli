@@ -3,7 +3,7 @@ mod config;
 
 use anyhow::{Result, bail};
 use chrono::{Duration, Utc};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use serde_json::Value;
 use std::process::Command;
 
@@ -18,6 +18,197 @@ struct Cli {
     command: Commands,
 }
 
+// === Args Structs ===
+
+#[derive(Args)]
+struct LogsArgs {
+    /// Time range (e.g., 15m, 1h, 24h)
+    #[arg(long, short, default_value = "15m")]
+    since: String,
+    /// Filter by service/workload name
+    #[arg(long, short = 'w')]
+    workload: Option<String>,
+    /// Filter by namespace
+    #[arg(long)]
+    namespace: Option<String>,
+    /// Filter by log level (info, warn, error)
+    #[arg(long, short)]
+    level: Option<String>,
+    /// Search text pattern
+    #[arg(long, short = 'g')]
+    grep: Option<String>,
+    /// Limit number of results
+    #[arg(long, short = 'n', default_value = "100")]
+    limit: u32,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct TracesArgs {
+    /// Time range (e.g., 15m, 1h, 24h)
+    #[arg(long, short, default_value = "15m")]
+    since: String,
+    /// Filter by service name
+    #[arg(long, short = 'w')]
+    workload: Option<String>,
+    /// Filter by operation/endpoint
+    #[arg(long, short)]
+    operation: Option<String>,
+    /// Filter by minimum duration in ms
+    #[arg(long)]
+    min_duration: Option<u64>,
+    /// Filter by status (ok, error)
+    #[arg(long)]
+    status: Option<String>,
+    /// Limit number of results
+    #[arg(long, short = 'n', default_value = "50")]
+    limit: u32,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct EventsArgs {
+    /// Time range (e.g., 15m, 1h, 24h)
+    #[arg(long, short, default_value = "1h")]
+    since: String,
+    /// Filter by namespace
+    #[arg(long)]
+    namespace: Option<String>,
+    /// Filter by event type (Normal, Warning)
+    #[arg(long, short = 't')]
+    event_type: Option<String>,
+    /// Filter by reason
+    #[arg(long)]
+    reason: Option<String>,
+    /// Limit number of results
+    #[arg(long, short = 'n', default_value = "100")]
+    limit: u32,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct MetricsArgs {
+    /// PromQL query
+    query: String,
+    /// Time range (e.g., 15m, 1h, 24h)
+    #[arg(long, short, default_value = "1h")]
+    since: String,
+    /// Step interval (e.g., 15s, 1m, 5m)
+    #[arg(long, default_value = "60s")]
+    step: String,
+    /// Output as JSON (default is table)
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct ApiArgs {
+    /// Filter by namespace
+    #[arg(long)]
+    namespace: Option<String>,
+    /// Filter by server/workload name
+    #[arg(long, short = 'w')]
+    workload: Option<String>,
+    /// Filter by endpoint (e.g., /api/users)
+    #[arg(long, short = 'e')]
+    endpoint: Option<String>,
+    /// Only show APIs with errors
+    #[arg(long)]
+    errors: bool,
+    /// Limit number of results
+    #[arg(long, short = 'n', default_value = "50")]
+    limit: u32,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct WorkloadsArgs {
+    /// Filter by namespace
+    #[arg(long)]
+    namespace: Option<String>,
+    /// Filter by workload name
+    #[arg(long, short = 'w')]
+    workload: Option<String>,
+    /// Filter by kind (Deployment, StatefulSet, DaemonSet, etc.)
+    #[arg(long, short)]
+    kind: Option<String>,
+    /// Only show workloads with errors (error_rate > 0)
+    #[arg(long)]
+    errors: bool,
+    /// Only show not ready workloads
+    #[arg(long)]
+    not_ready: bool,
+    /// Limit number of results
+    #[arg(long, short = 'n', default_value = "50")]
+    limit: u32,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct AlertsArgs {
+    /// Time range (e.g., 15m, 1h, 24h)
+    #[arg(long, short, default_value = "1h")]
+    since: String,
+    /// Filter by state (Normal, Pending, Alerting)
+    #[arg(long)]
+    state: Option<String>,
+    /// Filter by severity (S1, S2, S3, S4, S5)
+    #[arg(long)]
+    severity: Option<String>,
+    /// Filter by namespace
+    #[arg(long)]
+    namespace: Option<String>,
+    /// Filter by workload
+    #[arg(long, short = 'w')]
+    workload: Option<String>,
+    /// Filter by monitor name
+    #[arg(long, short = 'm')]
+    monitor: Option<String>,
+    /// Limit number of results
+    #[arg(long, short = 'n', default_value = "50")]
+    limit: u32,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct IssuesArgs {
+    /// Time range (e.g., 15m, 1h, 24h)
+    #[arg(long, short, default_value = "1h")]
+    since: String,
+    /// Filter by namespace
+    #[arg(long)]
+    namespace: Option<String>,
+    /// Filter by workload
+    #[arg(long, short = 'w')]
+    workload: Option<String>,
+    /// Filter by issue description
+    #[arg(long, short = 'g')]
+    grep: Option<String>,
+    /// Filter by return code
+    #[arg(long)]
+    code: Option<String>,
+    /// Limit number of results
+    #[arg(long, short = 'n', default_value = "50")]
+    limit: u32,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+// === Commands ===
+
 #[derive(Subcommand)]
 enum Commands {
     /// Configure API key
@@ -30,88 +221,13 @@ enum Commands {
         fetch: bool,
     },
     /// Query logs from ClickHouse
-    Logs {
-        /// Time range (e.g., 15m, 1h, 24h)
-        #[arg(long, short, default_value = "15m")]
-        since: String,
-        /// Filter by service/workload name
-        #[arg(long, short = 'w')]
-        workload: Option<String>,
-        /// Filter by namespace
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by log level (info, warn, error)
-        #[arg(long, short)]
-        level: Option<String>,
-        /// Search text pattern
-        #[arg(long, short = 'g')]
-        grep: Option<String>,
-        /// Limit number of results
-        #[arg(long, short = 'n', default_value = "100")]
-        limit: u32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Logs(LogsArgs),
     /// Query traces from ClickHouse
-    Traces {
-        /// Time range (e.g., 15m, 1h, 24h)
-        #[arg(long, short, default_value = "15m")]
-        since: String,
-        /// Filter by service name
-        #[arg(long, short = 'w')]
-        workload: Option<String>,
-        /// Filter by operation/endpoint
-        #[arg(long, short)]
-        operation: Option<String>,
-        /// Filter by minimum duration in ms
-        #[arg(long)]
-        min_duration: Option<u64>,
-        /// Filter by status (ok, error)
-        #[arg(long)]
-        status: Option<String>,
-        /// Limit number of results
-        #[arg(long, short = 'n', default_value = "50")]
-        limit: u32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Traces(TracesArgs),
     /// Query Kubernetes events from ClickHouse
-    Events {
-        /// Time range (e.g., 15m, 1h, 24h)
-        #[arg(long, short, default_value = "1h")]
-        since: String,
-        /// Filter by namespace
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by event type (Normal, Warning)
-        #[arg(long, short = 't')]
-        event_type: Option<String>,
-        /// Filter by reason
-        #[arg(long)]
-        reason: Option<String>,
-        /// Limit number of results
-        #[arg(long, short = 'n', default_value = "100")]
-        limit: u32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Events(EventsArgs),
     /// Query metrics from VictoriaMetrics using PromQL
-    Metrics {
-        /// PromQL query
-        query: String,
-        /// Time range (e.g., 15m, 1h, 24h)
-        #[arg(long, short, default_value = "1h")]
-        since: String,
-        /// Step interval (e.g., 15s, 1m, 5m)
-        #[arg(long, default_value = "60s")]
-        step: String,
-        /// Output as JSON (default is table)
-        #[arg(long)]
-        json: bool,
-    },
+    Metrics(MetricsArgs),
     /// Execute raw ClickHouse SQL query
     SqlClickhouse {
         /// SQL query to execute
@@ -123,101 +239,13 @@ enum Commands {
     /// List available tables in ClickHouse
     Tables,
     /// List API endpoints with metrics
-    Api {
-        /// Filter by namespace
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by server/workload name
-        #[arg(long, short = 'w')]
-        workload: Option<String>,
-        /// Filter by endpoint (e.g., /api/users)
-        #[arg(long, short = 'e')]
-        endpoint: Option<String>,
-        /// Only show APIs with errors
-        #[arg(long)]
-        errors: bool,
-        /// Limit number of results
-        #[arg(long, short = 'n', default_value = "50")]
-        limit: u32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Api(ApiArgs),
     /// List workloads with metrics
-    Workloads {
-        /// Filter by namespace
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by workload name
-        #[arg(long, short = 'w')]
-        workload: Option<String>,
-        /// Filter by kind (Deployment, StatefulSet, DaemonSet, etc.)
-        #[arg(long, short)]
-        kind: Option<String>,
-        /// Only show workloads with errors (error_rate > 0)
-        #[arg(long)]
-        errors: bool,
-        /// Only show not ready workloads
-        #[arg(long)]
-        not_ready: bool,
-        /// Limit number of results
-        #[arg(long, short = 'n', default_value = "50")]
-        limit: u32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Workloads(WorkloadsArgs),
     /// Query alerts from ClickHouse
-    Alerts {
-        /// Time range (e.g., 15m, 1h, 24h)
-        #[arg(long, short, default_value = "1h")]
-        since: String,
-        /// Filter by state (Normal, Pending, Alerting)
-        #[arg(long)]
-        state: Option<String>,
-        /// Filter by severity (S1, S2, S3, S4, S5)
-        #[arg(long)]
-        severity: Option<String>,
-        /// Filter by namespace
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by workload
-        #[arg(long, short = 'w')]
-        workload: Option<String>,
-        /// Filter by monitor name
-        #[arg(long, short = 'm')]
-        monitor: Option<String>,
-        /// Limit number of results
-        #[arg(long, short = 'n', default_value = "50")]
-        limit: u32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Alerts(AlertsArgs),
     /// Query detected issues from traces
-    Issues {
-        /// Time range (e.g., 15m, 1h, 24h)
-        #[arg(long, short, default_value = "1h")]
-        since: String,
-        /// Filter by namespace
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Filter by workload
-        #[arg(long, short = 'w')]
-        workload: Option<String>,
-        /// Filter by issue description
-        #[arg(long, short = 'g')]
-        grep: Option<String>,
-        /// Filter by return code
-        #[arg(long)]
-        code: Option<String>,
-        /// Limit number of results
-        #[arg(long, short = 'n', default_value = "50")]
-        limit: u32,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Issues(IssuesArgs),
     /// Grafana API commands
     Grafana {
         #[command(subcommand)]
@@ -392,66 +420,49 @@ fn run_config(config: &mut Config, api_key: Option<String>, fetch: bool) -> Resu
     Ok(())
 }
 
-async fn run_logs(
-    client: &Client,
-    since: String,
-    workload: Option<String>,
-    namespace: Option<String>,
-    level: Option<String>,
-    grep: Option<String>,
-    limit: u32,
-    json: bool,
-) -> Result<()> {
-    let duration = parse_duration(&since)?;
+async fn run_logs(client: &Client, args: LogsArgs) -> Result<()> {
+    let duration = parse_duration(&args.since)?;
     let mut conditions = vec![format!(
         "timestamp > now() - INTERVAL '{}' SECOND",
         duration.num_seconds()
     )];
-    if let Some(w) = workload {
+    if let Some(w) = args.workload {
         conditions.push(format!("workload LIKE '%{w}%'"));
     }
-    if let Some(ns) = namespace {
+    if let Some(ns) = args.namespace {
         conditions.push(format!("namespace = '{ns}'"));
     }
-    if let Some(l) = level {
+    if let Some(l) = args.level {
         conditions.push(format!("level = '{}'", l.to_uppercase()));
     }
-    if let Some(g) = grep {
+    if let Some(g) = args.grep {
         conditions.push(format!("body LIKE '%{g}%'"));
     }
     let sql = format!(
         "SELECT timestamp, namespace, workload, level, body \
-         FROM logs WHERE {} ORDER BY timestamp DESC LIMIT {limit}",
-        conditions.join(" AND ")
+         FROM logs WHERE {} ORDER BY timestamp DESC LIMIT {}",
+        conditions.join(" AND "),
+        args.limit
     );
-    print_query(client, &sql, json).await
+    print_query(client, &sql, args.json).await
 }
 
-async fn run_traces(
-    client: &Client,
-    since: String,
-    workload: Option<String>,
-    operation: Option<String>,
-    min_duration: Option<u64>,
-    status: Option<String>,
-    limit: u32,
-    json: bool,
-) -> Result<()> {
-    let duration = parse_duration(&since)?;
+async fn run_traces(client: &Client, args: TracesArgs) -> Result<()> {
+    let duration = parse_duration(&args.since)?;
     let mut conditions = vec![format!(
         "start_timestamp > now() - INTERVAL '{}' SECOND",
         duration.num_seconds()
     )];
-    if let Some(w) = workload {
+    if let Some(w) = args.workload {
         conditions.push(format!("service_name LIKE '%{w}%'"));
     }
-    if let Some(op) = operation {
+    if let Some(op) = args.operation {
         conditions.push(format!("operation LIKE '%{op}%'"));
     }
-    if let Some(min_dur) = min_duration {
+    if let Some(min_dur) = args.min_duration {
         conditions.push(format!("duration_ms >= {min_dur}"));
     }
-    if let Some(s) = status {
+    if let Some(s) = args.status {
         if s == "error" {
             conditions.push("status_code != 0".to_string());
         } else if s == "ok" {
@@ -460,22 +471,15 @@ async fn run_traces(
     }
     let sql = format!(
         "SELECT start_timestamp, service_name, operation, duration_ms, status_code \
-         FROM traces WHERE {} ORDER BY start_timestamp DESC LIMIT {limit}",
-        conditions.join(" AND ")
+         FROM traces WHERE {} ORDER BY start_timestamp DESC LIMIT {}",
+        conditions.join(" AND "),
+        args.limit
     );
-    print_query(client, &sql, json).await
+    print_query(client, &sql, args.json).await
 }
 
-async fn run_events(
-    client: &Client,
-    since: String,
-    namespace: Option<String>,
-    event_type: Option<String>,
-    reason: Option<String>,
-    limit: u32,
-    json: bool,
-) -> Result<()> {
-    let duration = parse_duration(&since)?;
+async fn run_events(client: &Client, args: EventsArgs) -> Result<()> {
+    let duration = parse_duration(&args.since)?;
     let mut conditions = vec![
         format!(
             "timestamp > now() - INTERVAL '{}' SECOND",
@@ -483,37 +487,32 @@ async fn run_events(
         ),
         "length(k8s_reason) > 0".to_string(),
     ];
-    if let Some(ns) = namespace {
+    if let Some(ns) = args.namespace {
         conditions.push(format!("entity_namespace = '{ns}'"));
     }
-    if let Some(t) = event_type {
+    if let Some(t) = args.event_type {
         conditions.push(format!("type = '{t}'"));
     }
-    if let Some(r) = reason {
+    if let Some(r) = args.reason {
         conditions.push(format!("k8s_reason LIKE '%{r}%'"));
     }
     let sql = format!(
         "SELECT timestamp, entity_namespace, type, k8s_reason, k8s_message \
-         FROM events WHERE {} ORDER BY timestamp DESC LIMIT {limit}",
-        conditions.join(" AND ")
+         FROM events WHERE {} ORDER BY timestamp DESC LIMIT {}",
+        conditions.join(" AND "),
+        args.limit
     );
-    print_query(client, &sql, json).await
+    print_query(client, &sql, args.json).await
 }
 
-async fn run_metrics(
-    client: &Client,
-    query: String,
-    since: String,
-    step: String,
-    json: bool,
-) -> Result<()> {
-    let duration = parse_duration(&since)?;
+async fn run_metrics(client: &Client, args: MetricsArgs) -> Result<()> {
+    let duration = parse_duration(&args.since)?;
     let now = Utc::now();
     let start = now - duration;
     let result = client
-        .query_metrics(&query, start.timestamp(), now.timestamp(), Some(&step))
+        .query_metrics(&args.query, start.timestamp(), now.timestamp(), Some(&args.step))
         .await?;
-    if json {
+    if args.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         print_metrics_table(&result);
@@ -575,26 +574,18 @@ async fn run_tables(client: &Client) -> Result<()> {
     Ok(())
 }
 
-async fn run_api(
-    client: &Client,
-    namespace: Option<String>,
-    workload: Option<String>,
-    endpoint: Option<String>,
-    errors: bool,
-    limit: u32,
-    json: bool,
-) -> Result<()> {
+async fn run_api(client: &Client, args: ApiArgs) -> Result<()> {
     let mut conditions: Vec<String> = vec![];
-    if let Some(ns) = namespace {
+    if let Some(ns) = args.namespace {
         conditions.push(format!("server_namespace = '{ns}'"));
     }
-    if let Some(w) = workload {
+    if let Some(w) = args.workload {
         conditions.push(format!("server LIKE '%{w}%'"));
     }
-    if let Some(ep) = endpoint {
+    if let Some(ep) = args.endpoint {
         conditions.push(format!("span_name LIKE '%{ep}%'"));
     }
-    if errors {
+    if args.errors {
         conditions.push("error_rate > 0".to_string());
     }
     let where_clause = if conditions.is_empty() {
@@ -609,9 +600,10 @@ async fn run_api(
          FROM apm_measurements_resource_refreshable_one_hour \
          {where_clause} \
          ORDER BY rps DESC NULLS LAST \
-         LIMIT {limit}"
+         LIMIT {}",
+        args.limit
     );
-    if json {
+    if args.json {
         let result = client.query_clickhouse_json(&sql).await?;
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -642,30 +634,21 @@ async fn run_api(
     Ok(())
 }
 
-async fn run_workloads(
-    client: &Client,
-    namespace: Option<String>,
-    workload: Option<String>,
-    kind: Option<String>,
-    errors: bool,
-    not_ready: bool,
-    limit: u32,
-    json: bool,
-) -> Result<()> {
+async fn run_workloads(client: &Client, args: WorkloadsArgs) -> Result<()> {
     let mut conditions: Vec<String> = vec![];
-    if let Some(ns) = namespace {
+    if let Some(ns) = args.namespace {
         conditions.push(format!("namespace = '{ns}'"));
     }
-    if let Some(w) = workload {
+    if let Some(w) = args.workload {
         conditions.push(format!("workload LIKE '%{w}%'"));
     }
-    if let Some(k) = kind {
+    if let Some(k) = args.kind {
         conditions.push(format!("kind = '{k}'"));
     }
-    if errors {
+    if args.errors {
         conditions.push("error_rate > 0".to_string());
     }
-    if not_ready {
+    if args.not_ready {
         conditions.push("ready = false".to_string());
     }
     let where_clause = if conditions.is_empty() {
@@ -680,9 +663,10 @@ async fn run_workloads(
          FROM workloads_refreshable \
          {where_clause} \
          ORDER BY rps DESC NULLS LAST \
-         LIMIT {limit}"
+         LIMIT {}",
+        args.limit
     );
-    if json {
+    if args.json {
         let result = client.query_clickhouse_json(&sql).await?;
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -715,35 +699,25 @@ async fn run_workloads(
     Ok(())
 }
 
-async fn run_alerts(
-    client: &Client,
-    since: String,
-    state: Option<String>,
-    severity: Option<String>,
-    namespace: Option<String>,
-    workload: Option<String>,
-    monitor: Option<String>,
-    limit: u32,
-    json: bool,
-) -> Result<()> {
-    let duration = parse_duration(&since)?;
+async fn run_alerts(client: &Client, args: AlertsArgs) -> Result<()> {
+    let duration = parse_duration(&args.since)?;
     let mut conditions = vec![format!(
         "timestamp > now() - INTERVAL '{}' SECOND",
         duration.num_seconds()
     )];
-    if let Some(s) = state {
+    if let Some(s) = args.state {
         conditions.push(format!("state = '{s}'"));
     }
-    if let Some(sev) = severity {
+    if let Some(sev) = args.severity {
         conditions.push(format!("severity = '{sev}'"));
     }
-    if let Some(ns) = namespace {
+    if let Some(ns) = args.namespace {
         conditions.push(format!("namespace = '{ns}'"));
     }
-    if let Some(w) = workload {
+    if let Some(w) = args.workload {
         conditions.push(format!("workload LIKE '%{w}%'"));
     }
-    if let Some(m) = monitor {
+    if let Some(m) = args.monitor {
         conditions.push(format!("monitor_name LIKE '%{m}%'"));
     }
     let sql = format!(
@@ -751,10 +725,11 @@ async fn run_alerts(
          FROM monitor_state \
          WHERE {} \
          ORDER BY timestamp DESC \
-         LIMIT {limit}",
-        conditions.join(" AND ")
+         LIMIT {}",
+        conditions.join(" AND "),
+        args.limit
     );
-    if json {
+    if args.json {
         let result = client.query_clickhouse_json(&sql).await?;
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -784,31 +759,22 @@ async fn run_alerts(
     Ok(())
 }
 
-async fn run_issues(
-    client: &Client,
-    since: String,
-    namespace: Option<String>,
-    workload: Option<String>,
-    grep: Option<String>,
-    code: Option<String>,
-    limit: u32,
-    json: bool,
-) -> Result<()> {
-    let duration = parse_duration(&since)?;
+async fn run_issues(client: &Client, args: IssuesArgs) -> Result<()> {
+    let duration = parse_duration(&args.since)?;
     let mut conditions = vec![format!(
         "last_seen > now() - INTERVAL '{}' SECOND",
         duration.num_seconds()
     )];
-    if let Some(ns) = namespace {
+    if let Some(ns) = args.namespace {
         conditions.push(format!("namespace = '{ns}'"));
     }
-    if let Some(w) = workload {
+    if let Some(w) = args.workload {
         conditions.push(format!("workload LIKE '%{w}%'"));
     }
-    if let Some(g) = grep {
+    if let Some(g) = args.grep {
         conditions.push(format!("issue_description LIKE '%{g}%'"));
     }
-    if let Some(c) = code {
+    if let Some(c) = args.code {
         conditions.push(format!("return_code = '{c}'"));
     }
     let sql = format!(
@@ -818,10 +784,11 @@ async fn run_issues(
          WHERE {} \
          GROUP BY last_seen, namespace, workload, issue_description, return_code \
          ORDER BY last_seen DESC \
-         LIMIT {limit}",
-        conditions.join(" AND ")
+         LIMIT {}",
+        conditions.join(" AND "),
+        args.limit
     );
-    if json {
+    if args.json {
         let result = client.query_clickhouse_json(&sql).await?;
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -1028,161 +995,18 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Config { api_key, fetch } => run_config(&mut config, api_key, fetch),
-        Commands::Logs {
-            since,
-            workload,
-            namespace,
-            level,
-            grep,
-            limit,
-            json,
-        } => {
-            run_logs(
-                &build_client(&config)?,
-                since,
-                workload,
-                namespace,
-                level,
-                grep,
-                limit,
-                json,
-            )
-            .await
-        }
-        Commands::Traces {
-            since,
-            workload,
-            operation,
-            min_duration,
-            status,
-            limit,
-            json,
-        } => {
-            run_traces(
-                &build_client(&config)?,
-                since,
-                workload,
-                operation,
-                min_duration,
-                status,
-                limit,
-                json,
-            )
-            .await
-        }
-        Commands::Events {
-            since,
-            namespace,
-            event_type,
-            reason,
-            limit,
-            json,
-        } => {
-            run_events(
-                &build_client(&config)?,
-                since,
-                namespace,
-                event_type,
-                reason,
-                limit,
-                json,
-            )
-            .await
-        }
-        Commands::Metrics {
-            query,
-            since,
-            step,
-            json,
-        } => run_metrics(&build_client(&config)?, query, since, step, json).await,
+        Commands::Logs(args) => run_logs(&build_client(&config)?, args).await,
+        Commands::Traces(args) => run_traces(&build_client(&config)?, args).await,
+        Commands::Events(args) => run_events(&build_client(&config)?, args).await,
+        Commands::Metrics(args) => run_metrics(&build_client(&config)?, args).await,
         Commands::SqlClickhouse { query, json } => {
             run_sql_clickhouse(&build_client(&config)?, query, json).await
         }
         Commands::Tables => run_tables(&build_client(&config)?).await,
-        Commands::Api {
-            namespace,
-            workload,
-            endpoint,
-            errors,
-            limit,
-            json,
-        } => {
-            run_api(
-                &build_client(&config)?,
-                namespace,
-                workload,
-                endpoint,
-                errors,
-                limit,
-                json,
-            )
-            .await
-        }
-        Commands::Workloads {
-            namespace,
-            workload,
-            kind,
-            errors,
-            not_ready,
-            limit,
-            json,
-        } => {
-            run_workloads(
-                &build_client(&config)?,
-                namespace,
-                workload,
-                kind,
-                errors,
-                not_ready,
-                limit,
-                json,
-            )
-            .await
-        }
-        Commands::Alerts {
-            since,
-            state,
-            severity,
-            namespace,
-            workload,
-            monitor,
-            limit,
-            json,
-        } => {
-            run_alerts(
-                &build_client(&config)?,
-                since,
-                state,
-                severity,
-                namespace,
-                workload,
-                monitor,
-                limit,
-                json,
-            )
-            .await
-        }
-        Commands::Issues {
-            since,
-            namespace,
-            workload,
-            grep,
-            code,
-            limit,
-            json,
-        } => {
-            run_issues(
-                &build_client(&config)?,
-                since,
-                namespace,
-                workload,
-                grep,
-                code,
-                limit,
-                json,
-            )
-            .await
-        }
+        Commands::Api(args) => run_api(&build_client(&config)?, args).await,
+        Commands::Workloads(args) => run_workloads(&build_client(&config)?, args).await,
+        Commands::Alerts(args) => run_alerts(&build_client(&config)?, args).await,
+        Commands::Issues(args) => run_issues(&build_client(&config)?, args).await,
         Commands::Grafana { command } => {
             let token = config.grafana_token().ok_or_else(|| {
                 anyhow::anyhow!("No Grafana token configured. Run: groundcover-cli config --fetch")
