@@ -337,56 +337,124 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Config { api_key, fetch } => run_config(&mut config, api_key, fetch),
         Commands::Logs(a) => {
-            clickhouse::run_logs(&build_client(&config)?, clickhouse::LogsArgs {
-                since: a.since, workload: a.workload, namespace: a.namespace,
-                level: a.level, grep: a.grep, limit: a.limit, json: a.json,
-            }).await
+            clickhouse::run_logs(
+                &build_client(&config)?,
+                clickhouse::LogsArgs {
+                    since: a.since,
+                    workload: a.workload,
+                    namespace: a.namespace,
+                    level: a.level,
+                    grep: a.grep,
+                    limit: a.limit,
+                    json: a.json,
+                },
+            )
+            .await
         }
         Commands::Traces(a) => {
-            clickhouse::run_traces(&build_client(&config)?, clickhouse::TracesArgs {
-                since: a.since, workload: a.workload, operation: a.operation,
-                min_duration: a.min_duration, status: a.status, limit: a.limit, json: a.json,
-            }).await
+            clickhouse::run_traces(
+                &build_client(&config)?,
+                clickhouse::TracesArgs {
+                    since: a.since,
+                    workload: a.workload,
+                    operation: a.operation,
+                    min_duration: a.min_duration,
+                    status: a.status,
+                    limit: a.limit,
+                    json: a.json,
+                },
+            )
+            .await
         }
         Commands::Events(a) => {
-            clickhouse::run_events(&build_client(&config)?, clickhouse::EventsArgs {
-                since: a.since, namespace: a.namespace, event_type: a.event_type,
-                reason: a.reason, limit: a.limit, json: a.json,
-            }).await
+            clickhouse::run_events(
+                &build_client(&config)?,
+                clickhouse::EventsArgs {
+                    since: a.since,
+                    namespace: a.namespace,
+                    event_type: a.event_type,
+                    reason: a.reason,
+                    limit: a.limit,
+                    json: a.json,
+                },
+            )
+            .await
         }
         Commands::Metrics(a) => {
-            clickhouse::run_metrics(&build_client(&config)?, clickhouse::MetricsArgs {
-                query: a.query, since: a.since, step: a.step, json: a.json,
-            }).await
+            clickhouse::run_metrics(
+                &build_client(&config)?,
+                clickhouse::MetricsArgs {
+                    query: a.query,
+                    since: a.since,
+                    step: a.step,
+                    json: a.json,
+                },
+            )
+            .await
         }
         Commands::SqlClickhouse { query, json } => {
             clickhouse::run_sql_clickhouse(&build_client(&config)?, query, json).await
         }
         Commands::Tables => clickhouse::run_tables(&build_client(&config)?).await,
         Commands::Api(a) => {
-            api::run_api(&build_client(&config)?, api::ApiArgs {
-                namespace: a.namespace, workload: a.workload, endpoint: a.endpoint,
-                errors: a.errors, limit: a.limit, json: a.json,
-            }).await
+            api::run_api(
+                &build_client(&config)?,
+                api::ApiArgs {
+                    namespace: a.namespace,
+                    workload: a.workload,
+                    endpoint: a.endpoint,
+                    errors: a.errors,
+                    limit: a.limit,
+                    json: a.json,
+                },
+            )
+            .await
         }
         Commands::Workloads(a) => {
-            api::run_workloads(&build_client(&config)?, api::WorkloadsArgs {
-                namespace: a.namespace, workload: a.workload, kind: a.kind,
-                errors: a.errors, not_ready: a.not_ready, limit: a.limit, json: a.json,
-            }).await
+            api::run_workloads(
+                &build_client(&config)?,
+                api::WorkloadsArgs {
+                    namespace: a.namespace,
+                    workload: a.workload,
+                    kind: a.kind,
+                    errors: a.errors,
+                    not_ready: a.not_ready,
+                    limit: a.limit,
+                    json: a.json,
+                },
+            )
+            .await
         }
         Commands::Alerts(a) => {
-            alerts::run_alerts(&build_client(&config)?, alerts::AlertsArgs {
-                since: a.since, state: a.state, severity: a.severity,
-                namespace: a.namespace, workload: a.workload, monitor: a.monitor,
-                limit: a.limit, json: a.json,
-            }).await
+            alerts::run_alerts(
+                &build_client(&config)?,
+                alerts::AlertsArgs {
+                    since: a.since,
+                    state: a.state,
+                    severity: a.severity,
+                    namespace: a.namespace,
+                    workload: a.workload,
+                    monitor: a.monitor,
+                    limit: a.limit,
+                    json: a.json,
+                },
+            )
+            .await
         }
         Commands::Issues(a) => {
-            alerts::run_issues(&build_client(&config)?, alerts::IssuesArgs {
-                since: a.since, namespace: a.namespace, workload: a.workload,
-                grep: a.grep, code: a.code, limit: a.limit, json: a.json,
-            }).await
+            alerts::run_issues(
+                &build_client(&config)?,
+                alerts::IssuesArgs {
+                    since: a.since,
+                    namespace: a.namespace,
+                    workload: a.workload,
+                    grep: a.grep,
+                    code: a.code,
+                    limit: a.limit,
+                    json: a.json,
+                },
+            )
+            .await
         }
         Commands::Grafana { command } => {
             let token = config.grafana_token().ok_or_else(|| {

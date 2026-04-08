@@ -130,7 +130,12 @@ pub async fn run_metrics(client: &Client, args: MetricsArgs) -> Result<()> {
     let now = Utc::now();
     let start = now - duration;
     let result = client
-        .query_metrics(&args.query, start.timestamp(), now.timestamp(), Some(&args.step))
+        .query_metrics(
+            &args.query,
+            start.timestamp(),
+            now.timestamp(),
+            Some(&args.step),
+        )
         .await?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
