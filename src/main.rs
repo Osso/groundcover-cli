@@ -1,14 +1,15 @@
 mod client;
+mod commands;
 mod config;
+mod helpers;
 
-use anyhow::{Result, bail};
-use chrono::{Duration, Utc};
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use serde_json::Value;
-use std::process::Command;
 
-use client::{Client, GrafanaClient};
+use client::GrafanaClient;
+use commands::{alerts, api, clickhouse, grafana};
 use config::Config;
+use helpers::{build_client, fetch_api_key, fetch_grafana_token};
 
 #[derive(Parser)]
 #[command(name = "groundcover-cli")]
@@ -289,101 +290,7 @@ enum GrafanaCommands {
     },
 }
 
-// === Helpers ===
-
-fn parse_duration(s: &str) -> Result<Duration> {
-    let s = s.trim();
-    if s.ends_with('m') {
-        Ok(Duration::minutes(s.trim_end_matches('m').parse()?))
-    } else if s.ends_with('h') {
-        Ok(Duration::hours(s.trim_end_matches('h').parse()?))
-    } else if s.ends_with('d') {
-        Ok(Duration::days(s.trim_end_matches('d').parse()?))
-    } else if s.ends_with('s') {
-        Ok(Duration::seconds(s.trim_end_matches('s').parse()?))
-    } else {
-        bail!("Invalid duration format: {s}. Use format like 15m, 1h, 24h, 7d")
-    }
-}
-
-fn null_to_dash(s: &str) -> &str {
-    if s == "\\N" { "-" } else { s }
-}
-
-fn fetch_groundcover_output(args: &[&str]) -> Result<String> {
-    let output = Command::new("groundcover").args(args).output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("groundcover {} failed: {}", args.join(" "), stderr);
-    }
-    Ok(String::from_utf8(output.stdout)?)
-}
-
-fn fetch_api_key() -> Result<String> {
-    let stdout = fetch_groundcover_output(&["auth", "get-datasources-api-key"])?;
-    stdout
-        .lines()
-        .rev()
-        .find(|line| {
-            let trimmed = line.trim();
-            !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphanumeric())
-        })
-        .map(|s| s.trim().to_string())
-        .ok_or_else(|| anyhow::anyhow!("Could not parse API key from groundcover output: {stdout}"))
-}
-
-fn fetch_grafana_token() -> Result<String> {
-    let stdout = fetch_groundcover_output(&["auth", "generate-service-account-token"])?;
-    stdout
-        .lines()
-        .rev()
-        .find(|line| line.trim().starts_with("glsa_"))
-        .map(|s| s.trim().to_string())
-        .ok_or_else(|| {
-            anyhow::anyhow!("Could not parse Grafana token from groundcover output: {stdout}")
-        })
-}
-
-fn build_client(config: &Config) -> Result<Client> {
-    let api_key = config.api_key().ok_or_else(|| {
-        anyhow::anyhow!("No API key configured. Run: groundcover-cli config --fetch")
-    })?;
-    Client::new(api_key.to_string())
-}
-
-async fn print_query(client: &Client, sql: &str, json: bool) -> Result<()> {
-    if json {
-        let result = client.query_clickhouse_json(sql).await?;
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        let result = client
-            .query_clickhouse(&format!("{sql} FORMAT TabSeparated"))
-            .await?;
-        for line in result.lines() {
-            println!("{}", line);
-        }
-    }
-    Ok(())
-}
-
-fn filter_by_title<'a>(items: &'a [Value], filter: Option<&str>) -> Vec<&'a Value> {
-    match filter {
-        Some(f) => {
-            let f_lower = f.to_lowercase();
-            items
-                .iter()
-                .filter(|item| {
-                    item["title"]
-                        .as_str()
-                        .is_some_and(|t| t.to_lowercase().contains(&f_lower))
-                })
-                .collect()
-        }
-        None => items.iter().collect(),
-    }
-}
-
-// === Command Handlers ===
+// === Config Handler ===
 
 fn run_config(config: &mut Config, api_key: Option<String>, fetch: bool) -> Result<()> {
     if fetch {
@@ -420,572 +327,6 @@ fn run_config(config: &mut Config, api_key: Option<String>, fetch: bool) -> Resu
     Ok(())
 }
 
-async fn run_logs(client: &Client, args: LogsArgs) -> Result<()> {
-    let duration = parse_duration(&args.since)?;
-    let mut conditions = vec![format!(
-        "timestamp > now() - INTERVAL '{}' SECOND",
-        duration.num_seconds()
-    )];
-    if let Some(w) = args.workload {
-        conditions.push(format!("workload LIKE '%{w}%'"));
-    }
-    if let Some(ns) = args.namespace {
-        conditions.push(format!("namespace = '{ns}'"));
-    }
-    if let Some(l) = args.level {
-        conditions.push(format!("level = '{}'", l.to_uppercase()));
-    }
-    if let Some(g) = args.grep {
-        conditions.push(format!("body LIKE '%{g}%'"));
-    }
-    let sql = format!(
-        "SELECT timestamp, namespace, workload, level, body \
-         FROM logs WHERE {} ORDER BY timestamp DESC LIMIT {}",
-        conditions.join(" AND "),
-        args.limit
-    );
-    print_query(client, &sql, args.json).await
-}
-
-async fn run_traces(client: &Client, args: TracesArgs) -> Result<()> {
-    let duration = parse_duration(&args.since)?;
-    let mut conditions = vec![format!(
-        "start_timestamp > now() - INTERVAL '{}' SECOND",
-        duration.num_seconds()
-    )];
-    if let Some(w) = args.workload {
-        conditions.push(format!("service_name LIKE '%{w}%'"));
-    }
-    if let Some(op) = args.operation {
-        conditions.push(format!("operation LIKE '%{op}%'"));
-    }
-    if let Some(min_dur) = args.min_duration {
-        conditions.push(format!("duration_ms >= {min_dur}"));
-    }
-    if let Some(s) = args.status {
-        if s == "error" {
-            conditions.push("status_code != 0".to_string());
-        } else if s == "ok" {
-            conditions.push("status_code = 0".to_string());
-        }
-    }
-    let sql = format!(
-        "SELECT start_timestamp, service_name, operation, duration_ms, status_code \
-         FROM traces WHERE {} ORDER BY start_timestamp DESC LIMIT {}",
-        conditions.join(" AND "),
-        args.limit
-    );
-    print_query(client, &sql, args.json).await
-}
-
-async fn run_events(client: &Client, args: EventsArgs) -> Result<()> {
-    let duration = parse_duration(&args.since)?;
-    let mut conditions = vec![
-        format!(
-            "timestamp > now() - INTERVAL '{}' SECOND",
-            duration.num_seconds()
-        ),
-        "length(k8s_reason) > 0".to_string(),
-    ];
-    if let Some(ns) = args.namespace {
-        conditions.push(format!("entity_namespace = '{ns}'"));
-    }
-    if let Some(t) = args.event_type {
-        conditions.push(format!("type = '{t}'"));
-    }
-    if let Some(r) = args.reason {
-        conditions.push(format!("k8s_reason LIKE '%{r}%'"));
-    }
-    let sql = format!(
-        "SELECT timestamp, entity_namespace, type, k8s_reason, k8s_message \
-         FROM events WHERE {} ORDER BY timestamp DESC LIMIT {}",
-        conditions.join(" AND "),
-        args.limit
-    );
-    print_query(client, &sql, args.json).await
-}
-
-async fn run_metrics(client: &Client, args: MetricsArgs) -> Result<()> {
-    let duration = parse_duration(&args.since)?;
-    let now = Utc::now();
-    let start = now - duration;
-    let result = client
-        .query_metrics(&args.query, start.timestamp(), now.timestamp(), Some(&args.step))
-        .await?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        print_metrics_table(&result);
-    }
-    Ok(())
-}
-
-fn print_metrics_table(result: &Value) {
-    let Some(data) = result
-        .get("data")
-        .and_then(|d| d.get("result"))
-        .and_then(|r| r.as_array())
-    else {
-        if let Ok(pretty) = serde_json::to_string_pretty(result) {
-            println!("{pretty}");
-        }
-        return;
-    };
-    for series in data {
-        if let Some(metric) = series.get("metric") {
-            println!("Metric: {metric}");
-        }
-        let Some(values) = series.get("values").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        for val in values.iter().take(10) {
-            let Some(arr) = val.as_array().filter(|a| a.len() >= 2) else {
-                continue;
-            };
-            let ts = arr[0].as_f64().unwrap_or(0.0);
-            let v = arr[1].as_str().unwrap_or("?");
-            println!("  {}: {v}", ts as i64);
-        }
-        if values.len() > 10 {
-            println!("  ... and {} more values", values.len() - 10);
-        }
-    }
-}
-
-async fn run_sql_clickhouse(client: &Client, query: String, json: bool) -> Result<()> {
-    if json {
-        let result = client.query_clickhouse_json(&query).await?;
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        let result = client.query_clickhouse(&query).await?;
-        println!("{result}");
-    }
-    Ok(())
-}
-
-async fn run_tables(client: &Client) -> Result<()> {
-    let result = client
-        .query_clickhouse("SHOW TABLES FORMAT TabSeparated")
-        .await?;
-    println!("Available tables:");
-    for line in result.lines() {
-        println!("  {line}");
-    }
-    Ok(())
-}
-
-async fn run_api(client: &Client, args: ApiArgs) -> Result<()> {
-    let mut conditions: Vec<String> = vec![];
-    if let Some(ns) = args.namespace {
-        conditions.push(format!("server_namespace = '{ns}'"));
-    }
-    if let Some(w) = args.workload {
-        conditions.push(format!("server LIKE '%{w}%'"));
-    }
-    if let Some(ep) = args.endpoint {
-        conditions.push(format!("span_name LIKE '%{ep}%'"));
-    }
-    if args.errors {
-        conditions.push("error_rate > 0".to_string());
-    }
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
-    };
-    let sql = format!(
-        "SELECT server_namespace, server, span_name, \
-         round(rps, 2) as rps, round(error_rate * 100, 2) as error_pct, \
-         round(p50, 1) as p50_ms, round(p99, 1) as p99_ms \
-         FROM apm_measurements_resource_refreshable_one_hour \
-         {where_clause} \
-         ORDER BY rps DESC NULLS LAST \
-         LIMIT {}",
-        args.limit
-    );
-    if args.json {
-        let result = client.query_clickhouse_json(&sql).await?;
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        let result = client
-            .query_clickhouse(&format!("{sql} FORMAT TabSeparated"))
-            .await?;
-        println!(
-            "{:<20} {:<25} {:<50} {:<10} {:<8} {:<8} {}",
-            "NAMESPACE", "SERVICE", "ENDPOINT", "RPS", "ERR%", "P50ms", "P99ms"
-        );
-        println!("{}", "-".repeat(130));
-        for line in result.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 7 {
-                println!(
-                    "{:<20} {:<25} {:<50} {:<10} {:<8} {:<8} {}",
-                    &parts[0][..20.min(parts[0].len())],
-                    &parts[1][..25.min(parts[1].len())],
-                    &parts[2][..50.min(parts[2].len())],
-                    null_to_dash(parts[3]),
-                    null_to_dash(parts[4]),
-                    null_to_dash(parts[5]),
-                    null_to_dash(parts[6])
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn run_workloads(client: &Client, args: WorkloadsArgs) -> Result<()> {
-    let mut conditions: Vec<String> = vec![];
-    if let Some(ns) = args.namespace {
-        conditions.push(format!("namespace = '{ns}'"));
-    }
-    if let Some(w) = args.workload {
-        conditions.push(format!("workload LIKE '%{w}%'"));
-    }
-    if let Some(k) = args.kind {
-        conditions.push(format!("kind = '{k}'"));
-    }
-    if args.errors {
-        conditions.push("error_rate > 0".to_string());
-    }
-    if args.not_ready {
-        conditions.push("ready = false".to_string());
-    }
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
-    };
-    let sql = format!(
-        "SELECT namespace, workload, kind, ready, pods_count, \
-         round(rps, 2) as rps, round(error_rate * 100, 2) as error_pct, \
-         round(p50, 1) as p50_ms, round(p99, 1) as p99_ms \
-         FROM workloads_refreshable \
-         {where_clause} \
-         ORDER BY rps DESC NULLS LAST \
-         LIMIT {}",
-        args.limit
-    );
-    if args.json {
-        let result = client.query_clickhouse_json(&sql).await?;
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        let result = client
-            .query_clickhouse(&format!("{sql} FORMAT TabSeparated"))
-            .await?;
-        println!(
-            "{:<20} {:<30} {:<12} {:<6} {:<6} {:<8} {:<8} {:<8} {}",
-            "NAMESPACE", "WORKLOAD", "KIND", "READY", "PODS", "RPS", "ERR%", "P50ms", "P99ms"
-        );
-        println!("{}", "-".repeat(120));
-        for line in result.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 9 {
-                println!(
-                    "{:<20} {:<30} {:<12} {:<6} {:<6} {:<8} {:<8} {:<8} {}",
-                    parts[0],
-                    &parts[1][..30.min(parts[1].len())],
-                    parts[2],
-                    if parts[3] == "true" { "yes" } else { "no" },
-                    null_to_dash(parts[4]),
-                    null_to_dash(parts[5]),
-                    null_to_dash(parts[6]),
-                    null_to_dash(parts[7]),
-                    null_to_dash(parts[8])
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn run_alerts(client: &Client, args: AlertsArgs) -> Result<()> {
-    let duration = parse_duration(&args.since)?;
-    let mut conditions = vec![format!(
-        "timestamp > now() - INTERVAL '{}' SECOND",
-        duration.num_seconds()
-    )];
-    if let Some(s) = args.state {
-        conditions.push(format!("state = '{s}'"));
-    }
-    if let Some(sev) = args.severity {
-        conditions.push(format!("severity = '{sev}'"));
-    }
-    if let Some(ns) = args.namespace {
-        conditions.push(format!("namespace = '{ns}'"));
-    }
-    if let Some(w) = args.workload {
-        conditions.push(format!("workload LIKE '%{w}%'"));
-    }
-    if let Some(m) = args.monitor {
-        conditions.push(format!("monitor_name LIKE '%{m}%'"));
-    }
-    let sql = format!(
-        "SELECT timestamp, monitor_name, state, severity, namespace, workload \
-         FROM monitor_state \
-         WHERE {} \
-         ORDER BY timestamp DESC \
-         LIMIT {}",
-        conditions.join(" AND "),
-        args.limit
-    );
-    if args.json {
-        let result = client.query_clickhouse_json(&sql).await?;
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        let result = client
-            .query_clickhouse(&format!("{sql} FORMAT TabSeparated"))
-            .await?;
-        println!(
-            "{:<24} {:<40} {:<10} {:<6} {:<20} {}",
-            "TIMESTAMP", "MONITOR", "STATE", "SEV", "NAMESPACE", "WORKLOAD"
-        );
-        println!("{}", "-".repeat(120));
-        for line in result.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 6 {
-                println!(
-                    "{:<24} {:<40} {:<10} {:<6} {:<20} {}",
-                    parts[0],
-                    &parts[1][..40.min(parts[1].len())],
-                    parts[2],
-                    parts[3],
-                    parts[4],
-                    parts[5]
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn run_issues(client: &Client, args: IssuesArgs) -> Result<()> {
-    let duration = parse_duration(&args.since)?;
-    let mut conditions = vec![format!(
-        "last_seen > now() - INTERVAL '{}' SECOND",
-        duration.num_seconds()
-    )];
-    if let Some(ns) = args.namespace {
-        conditions.push(format!("namespace = '{ns}'"));
-    }
-    if let Some(w) = args.workload {
-        conditions.push(format!("workload LIKE '%{w}%'"));
-    }
-    if let Some(g) = args.grep {
-        conditions.push(format!("issue_description LIKE '%{g}%'"));
-    }
-    if let Some(c) = args.code {
-        conditions.push(format!("return_code = '{c}'"));
-    }
-    let sql = format!(
-        "SELECT last_seen, namespace, workload, issue_description, return_code, \
-         sum(incident_count) as total_count \
-         FROM traces_issues_list_one_minute_view \
-         WHERE {} \
-         GROUP BY last_seen, namespace, workload, issue_description, return_code \
-         ORDER BY last_seen DESC \
-         LIMIT {}",
-        conditions.join(" AND "),
-        args.limit
-    );
-    if args.json {
-        let result = client.query_clickhouse_json(&sql).await?;
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        let result = client
-            .query_clickhouse(&format!("{sql} FORMAT TabSeparated"))
-            .await?;
-        println!(
-            "{:<24} {:<20} {:<25} {:<30} {:<8} {}",
-            "LAST_SEEN", "NAMESPACE", "WORKLOAD", "ISSUE", "CODE", "COUNT"
-        );
-        println!("{}", "-".repeat(120));
-        for line in result.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 6 {
-                println!(
-                    "{:<24} {:<20} {:<25} {:<30} {:<8} {}",
-                    parts[0],
-                    &parts[1][..20.min(parts[1].len())],
-                    &parts[2][..25.min(parts[2].len())],
-                    &parts[3][..30.min(parts[3].len())],
-                    null_to_dash(parts[4]),
-                    null_to_dash(parts[5])
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-// === Grafana Handlers ===
-
-async fn run_grafana(client: &GrafanaClient, command: GrafanaCommands) -> Result<()> {
-    match command {
-        GrafanaCommands::Datasources => {
-            let result = client.list_datasources().await?;
-            let Some(arr) = result.as_array() else {
-                return Ok(());
-            };
-            println!("{:<40} {:<12} {}", "UID", "TYPE", "NAME");
-            println!("{}", "-".repeat(80));
-            for ds in arr {
-                println!(
-                    "{:<40} {:<12} {}",
-                    ds["uid"].as_str().unwrap_or("?"),
-                    ds["type"].as_str().unwrap_or("?"),
-                    ds["name"].as_str().unwrap_or("?")
-                );
-            }
-        }
-        GrafanaCommands::Datasource { uid } => {
-            let result = client.get_datasource(&uid).await?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        GrafanaCommands::Dashboards => {
-            print_uid_title_table(&client.list_dashboards().await?);
-        }
-        GrafanaCommands::Search { query } => {
-            print_uid_title_table(&client.search_dashboards(&query).await?);
-        }
-        GrafanaCommands::AlertRules { filter, json } => {
-            run_grafana_alert_rules(client, filter, json).await?;
-        }
-        GrafanaCommands::Alerts { filter, json } => {
-            run_grafana_alerts(client, filter, json).await?;
-        }
-    }
-    Ok(())
-}
-
-fn print_uid_title_table(result: &Value) {
-    let Some(arr) = result.as_array() else {
-        return;
-    };
-    println!("{:<40} {}", "UID", "TITLE");
-    println!("{}", "-".repeat(80));
-    for item in arr {
-        println!(
-            "{:<40} {}",
-            item["uid"].as_str().unwrap_or("?"),
-            item["title"].as_str().unwrap_or("?")
-        );
-    }
-}
-
-async fn run_grafana_alert_rules(
-    client: &GrafanaClient,
-    filter: Option<String>,
-    json: bool,
-) -> Result<()> {
-    let result = client.list_alert_rules().await?;
-    let Some(arr) = result.as_array() else {
-        return Ok(());
-    };
-    let filtered = filter_by_title(arr, filter.as_deref());
-    if json {
-        println!("{}", serde_json::to_string_pretty(&filtered)?);
-    } else {
-        println!("{:<40} {:<20} {}", "UID", "FOLDER", "TITLE");
-        println!("{}", "-".repeat(100));
-        for rule in &filtered {
-            println!(
-                "{:<40} {:<20} {}",
-                rule["uid"].as_str().unwrap_or("?"),
-                rule["folderUID"].as_str().unwrap_or("?"),
-                rule["title"].as_str().unwrap_or("?")
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn run_grafana_alerts(
-    client: &GrafanaClient,
-    filter: Option<String>,
-    json: bool,
-) -> Result<()> {
-    let result = client.get_ruler_rules().await?;
-    let alerts = parse_ruler_alerts(&result);
-    let filtered = filter_by_title(&alerts, filter.as_deref());
-    if json {
-        println!("{}", serde_json::to_string_pretty(&filtered)?);
-    } else {
-        println!(
-            "{:<10} {:<25} {:<40} {}",
-            "STATE", "FOLDER", "TITLE", "EXPRESSION"
-        );
-        println!("{}", "-".repeat(120));
-        for alert in &filtered {
-            let title = alert["title"].as_str().unwrap_or("?");
-            let title_display = if title.len() > 38 {
-                format!("{}...", &title[..35])
-            } else {
-                title.to_string()
-            };
-            let expr = alert["expr"].as_str().unwrap_or("");
-            let expr_display = if expr.len() > 45 {
-                format!("{}...", &expr[..42])
-            } else {
-                expr.to_string()
-            };
-            let folder = alert["folder"].as_str().unwrap_or("?");
-            println!(
-                "{:<10} {:<25} {:<40} {}",
-                alert["state"].as_str().unwrap_or("?"),
-                &folder[..25.min(folder.len())],
-                title_display,
-                expr_display
-            );
-        }
-    }
-    Ok(())
-}
-
-fn parse_ruler_alerts(result: &Value) -> Vec<Value> {
-    let Some(obj) = result.as_object() else {
-        return Vec::new();
-    };
-    let mut alerts = Vec::new();
-    for (folder_name, groups) in obj {
-        let Some(groups_arr) = groups.as_array() else {
-            continue;
-        };
-        for group in groups_arr {
-            let Some(rules) = group.get("rules").and_then(|r| r.as_array()) else {
-                continue;
-            };
-            for rule in rules {
-                let grafana_alert = rule.get("grafana_alert");
-                let title = grafana_alert
-                    .and_then(|ga| ga.get("title"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("?");
-                let state = rule.get("state").and_then(|s| s.as_str()).unwrap_or("?");
-                let expr = grafana_alert
-                    .and_then(|ga| ga.get("data"))
-                    .and_then(|d| d.as_array())
-                    .and_then(|arr| {
-                        arr.iter().find_map(|item| {
-                            item.get("model")
-                                .and_then(|m| m.get("expr"))
-                                .and_then(|e| e.as_str())
-                                .filter(|s| !s.is_empty())
-                        })
-                    })
-                    .unwrap_or("");
-                alerts.push(serde_json::json!({
-                    "title": title,
-                    "state": state,
-                    "folder": folder_name,
-                    "expr": expr,
-                }));
-            }
-        }
-    }
-    alerts
-}
-
 // === Main ===
 
 #[tokio::main]
@@ -995,24 +336,79 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Config { api_key, fetch } => run_config(&mut config, api_key, fetch),
-        Commands::Logs(args) => run_logs(&build_client(&config)?, args).await,
-        Commands::Traces(args) => run_traces(&build_client(&config)?, args).await,
-        Commands::Events(args) => run_events(&build_client(&config)?, args).await,
-        Commands::Metrics(args) => run_metrics(&build_client(&config)?, args).await,
-        Commands::SqlClickhouse { query, json } => {
-            run_sql_clickhouse(&build_client(&config)?, query, json).await
+        Commands::Logs(a) => {
+            clickhouse::run_logs(&build_client(&config)?, clickhouse::LogsArgs {
+                since: a.since, workload: a.workload, namespace: a.namespace,
+                level: a.level, grep: a.grep, limit: a.limit, json: a.json,
+            }).await
         }
-        Commands::Tables => run_tables(&build_client(&config)?).await,
-        Commands::Api(args) => run_api(&build_client(&config)?, args).await,
-        Commands::Workloads(args) => run_workloads(&build_client(&config)?, args).await,
-        Commands::Alerts(args) => run_alerts(&build_client(&config)?, args).await,
-        Commands::Issues(args) => run_issues(&build_client(&config)?, args).await,
+        Commands::Traces(a) => {
+            clickhouse::run_traces(&build_client(&config)?, clickhouse::TracesArgs {
+                since: a.since, workload: a.workload, operation: a.operation,
+                min_duration: a.min_duration, status: a.status, limit: a.limit, json: a.json,
+            }).await
+        }
+        Commands::Events(a) => {
+            clickhouse::run_events(&build_client(&config)?, clickhouse::EventsArgs {
+                since: a.since, namespace: a.namespace, event_type: a.event_type,
+                reason: a.reason, limit: a.limit, json: a.json,
+            }).await
+        }
+        Commands::Metrics(a) => {
+            clickhouse::run_metrics(&build_client(&config)?, clickhouse::MetricsArgs {
+                query: a.query, since: a.since, step: a.step, json: a.json,
+            }).await
+        }
+        Commands::SqlClickhouse { query, json } => {
+            clickhouse::run_sql_clickhouse(&build_client(&config)?, query, json).await
+        }
+        Commands::Tables => clickhouse::run_tables(&build_client(&config)?).await,
+        Commands::Api(a) => {
+            api::run_api(&build_client(&config)?, api::ApiArgs {
+                namespace: a.namespace, workload: a.workload, endpoint: a.endpoint,
+                errors: a.errors, limit: a.limit, json: a.json,
+            }).await
+        }
+        Commands::Workloads(a) => {
+            api::run_workloads(&build_client(&config)?, api::WorkloadsArgs {
+                namespace: a.namespace, workload: a.workload, kind: a.kind,
+                errors: a.errors, not_ready: a.not_ready, limit: a.limit, json: a.json,
+            }).await
+        }
+        Commands::Alerts(a) => {
+            alerts::run_alerts(&build_client(&config)?, alerts::AlertsArgs {
+                since: a.since, state: a.state, severity: a.severity,
+                namespace: a.namespace, workload: a.workload, monitor: a.monitor,
+                limit: a.limit, json: a.json,
+            }).await
+        }
+        Commands::Issues(a) => {
+            alerts::run_issues(&build_client(&config)?, alerts::IssuesArgs {
+                since: a.since, namespace: a.namespace, workload: a.workload,
+                grep: a.grep, code: a.code, limit: a.limit, json: a.json,
+            }).await
+        }
         Commands::Grafana { command } => {
             let token = config.grafana_token().ok_or_else(|| {
                 anyhow::anyhow!("No Grafana token configured. Run: groundcover-cli config --fetch")
             })?;
-            let client = GrafanaClient::new(token.to_string())?;
-            run_grafana(&client, command).await
+            let gclient = GrafanaClient::new(token.to_string())?;
+            grafana::run_grafana(&gclient, map_grafana_command(command)).await
+        }
+    }
+}
+
+fn map_grafana_command(command: GrafanaCommands) -> grafana::GrafanaCommands {
+    match command {
+        GrafanaCommands::Datasources => grafana::GrafanaCommands::Datasources,
+        GrafanaCommands::Datasource { uid } => grafana::GrafanaCommands::Datasource { uid },
+        GrafanaCommands::Dashboards => grafana::GrafanaCommands::Dashboards,
+        GrafanaCommands::Search { query } => grafana::GrafanaCommands::Search { query },
+        GrafanaCommands::AlertRules { filter, json } => {
+            grafana::GrafanaCommands::AlertRules { filter, json }
+        }
+        GrafanaCommands::Alerts { filter, json } => {
+            grafana::GrafanaCommands::Alerts { filter, json }
         }
     }
 }
