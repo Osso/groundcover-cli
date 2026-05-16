@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::Utc;
 
 use crate::client::Client;
@@ -42,6 +42,12 @@ pub struct MetricsArgs {
 
 pub async fn run_logs(client: &Client, args: LogsArgs) -> Result<()> {
     let duration = parse_duration(&args.since)?;
+    if args.grep.is_some() && duration.num_hours() > 24 {
+        bail!(
+            "--since {} too large for -g (max 24h): ClickHouse times out on body LIKE scans beyond ~36h. Narrow the window or add -w/--workload to use an indexed filter.",
+            args.since
+        );
+    }
     let mut conditions = vec![format!(
         "timestamp > now() - INTERVAL '{}' SECOND",
         duration.num_seconds()
