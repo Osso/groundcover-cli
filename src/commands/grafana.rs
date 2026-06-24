@@ -139,42 +139,62 @@ fn parse_ruler_alerts(result: &Value) -> Vec<Value> {
     let Some(obj) = result.as_object() else {
         return Vec::new();
     };
-    let mut alerts = Vec::new();
-    for (folder_name, groups) in obj {
-        let Some(groups_arr) = groups.as_array() else {
-            continue;
-        };
-        for group in groups_arr {
-            let Some(rules) = group.get("rules").and_then(|r| r.as_array()) else {
-                continue;
-            };
-            for rule in rules {
-                let grafana_alert = rule.get("grafana_alert");
-                let title = grafana_alert
-                    .and_then(|ga| ga.get("title"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("?");
-                let state = rule.get("state").and_then(|s| s.as_str()).unwrap_or("?");
-                let expr = grafana_alert
-                    .and_then(|ga| ga.get("data"))
-                    .and_then(|d| d.as_array())
-                    .and_then(|arr| {
-                        arr.iter().find_map(|item| {
-                            item.get("model")
-                                .and_then(|m| m.get("expr"))
-                                .and_then(|e| e.as_str())
-                                .filter(|s| !s.is_empty())
-                        })
-                    })
-                    .unwrap_or("");
-                alerts.push(serde_json::json!({
-                    "title": title,
-                    "state": state,
-                    "folder": folder_name,
-                    "expr": expr,
-                }));
-            }
-        }
-    }
-    alerts
+    obj.iter()
+        .flat_map(|(folder_name, groups)| parse_folder_alerts(folder_name, groups))
+        .collect()
+}
+
+fn parse_folder_alerts(folder_name: &str, groups: &Value) -> Vec<Value> {
+    let Some(groups_arr) = groups.as_array() else {
+        return Vec::new();
+    };
+    groups_arr
+        .iter()
+        .flat_map(|group| parse_group_alerts(folder_name, group))
+        .collect()
+}
+
+fn parse_group_alerts(folder_name: &str, group: &Value) -> Vec<Value> {
+    let Some(rules) = group.get("rules").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    rules
+        .iter()
+        .map(|rule| build_parsed_alert(folder_name, rule))
+        .collect()
+}
+
+fn build_parsed_alert(folder_name: &str, rule: &Value) -> Value {
+    serde_json::json!({
+        "title": extract_alert_title(rule),
+        "state": extract_alert_state(rule),
+        "folder": folder_name,
+        "expr": extract_alert_expr(rule),
+    })
+}
+
+fn extract_alert_title(rule: &Value) -> &str {
+    rule.get("grafana_alert")
+        .and_then(|alert| alert.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or("?")
+}
+
+fn extract_alert_state(rule: &Value) -> &str {
+    rule.get("state").and_then(Value::as_str).unwrap_or("?")
+}
+
+fn extract_alert_expr(rule: &Value) -> &str {
+    rule.get("grafana_alert")
+        .and_then(|alert| alert.get("data"))
+        .and_then(Value::as_array)
+        .and_then(|data| {
+            data.iter().find_map(|item| {
+                item.get("model")
+                    .and_then(|model| model.get("expr"))
+                    .and_then(Value::as_str)
+                    .filter(|expr| !expr.is_empty())
+            })
+        })
+        .unwrap_or("")
 }

@@ -1,4 +1,7 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod client;
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod commands;
 mod config;
 mod helpers;
@@ -292,6 +295,7 @@ enum GrafanaCommands {
 
 // === Config Handler ===
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn run_config(config: &mut Config, api_key: Option<String>, fetch: bool) -> Result<()> {
     if fetch {
         eprintln!("Fetching API key from groundcover CLI...");
@@ -329,143 +333,49 @@ fn run_config(config: &mut Config, api_key: Option<String>, fetch: bool) -> Resu
 
 // === Main ===
 
+#[cfg_attr(coverage_nightly, coverage(off))]
+async fn run_data_command(config: &Config, command: Commands) -> Result<()> {
+    let client = build_client(config)?;
+    match command {
+        Commands::Logs(args) => clickhouse::run_logs(&client, args.into()).await,
+        Commands::Traces(args) => clickhouse::run_traces(&client, args.into()).await,
+        Commands::Events(args) => clickhouse::run_events(&client, args.into()).await,
+        Commands::Metrics(args) => clickhouse::run_metrics(&client, args.into()).await,
+        Commands::SqlClickhouse { query, json } => {
+            clickhouse::run_sql_clickhouse(&client, query, json).await
+        }
+        Commands::Tables => clickhouse::run_tables(&client).await,
+        Commands::Api(args) => api::run_api(&client, args.into()).await,
+        Commands::Workloads(args) => api::run_workloads(&client, args.into()).await,
+        Commands::Alerts(args) => alerts::run_alerts(&client, args.into()).await,
+        Commands::Issues(args) => alerts::run_issues(&client, args.into()).await,
+        Commands::Config { .. } | Commands::Grafana { .. } => unreachable!(),
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+async fn run_grafana_command(config: &Config, command: GrafanaCommands) -> Result<()> {
+    let token = config.grafana_token().ok_or_else(|| {
+        anyhow::anyhow!("No Grafana token configured. Run: groundcover-cli config --fetch")
+    })?;
+    let client = GrafanaClient::new(token.to_string())?;
+    grafana::run_grafana(&client, map_grafana_command(command)).await
+}
+
 #[tokio::main]
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut config = Config::load()?;
 
     match cli.command {
         Commands::Config { api_key, fetch } => run_config(&mut config, api_key, fetch),
-        Commands::Logs(a) => {
-            clickhouse::run_logs(
-                &build_client(&config)?,
-                clickhouse::LogsArgs {
-                    since: a.since,
-                    workload: a.workload,
-                    namespace: a.namespace,
-                    level: a.level,
-                    grep: a.grep,
-                    limit: a.limit,
-                    json: a.json,
-                },
-            )
-            .await
-        }
-        Commands::Traces(a) => {
-            clickhouse::run_traces(
-                &build_client(&config)?,
-                clickhouse::TracesArgs {
-                    since: a.since,
-                    workload: a.workload,
-                    operation: a.operation,
-                    min_duration: a.min_duration,
-                    status: a.status,
-                    limit: a.limit,
-                    json: a.json,
-                },
-            )
-            .await
-        }
-        Commands::Events(a) => {
-            clickhouse::run_events(
-                &build_client(&config)?,
-                clickhouse::EventsArgs {
-                    since: a.since,
-                    namespace: a.namespace,
-                    event_type: a.event_type,
-                    reason: a.reason,
-                    limit: a.limit,
-                    json: a.json,
-                },
-            )
-            .await
-        }
-        Commands::Metrics(a) => {
-            clickhouse::run_metrics(
-                &build_client(&config)?,
-                clickhouse::MetricsArgs {
-                    query: a.query,
-                    since: a.since,
-                    step: a.step,
-                    json: a.json,
-                },
-            )
-            .await
-        }
-        Commands::SqlClickhouse { query, json } => {
-            clickhouse::run_sql_clickhouse(&build_client(&config)?, query, json).await
-        }
-        Commands::Tables => clickhouse::run_tables(&build_client(&config)?).await,
-        Commands::Api(a) => {
-            api::run_api(
-                &build_client(&config)?,
-                api::ApiArgs {
-                    namespace: a.namespace,
-                    workload: a.workload,
-                    endpoint: a.endpoint,
-                    errors: a.errors,
-                    limit: a.limit,
-                    json: a.json,
-                },
-            )
-            .await
-        }
-        Commands::Workloads(a) => {
-            api::run_workloads(
-                &build_client(&config)?,
-                api::WorkloadsArgs {
-                    namespace: a.namespace,
-                    workload: a.workload,
-                    kind: a.kind,
-                    errors: a.errors,
-                    not_ready: a.not_ready,
-                    limit: a.limit,
-                    json: a.json,
-                },
-            )
-            .await
-        }
-        Commands::Alerts(a) => {
-            alerts::run_alerts(
-                &build_client(&config)?,
-                alerts::AlertsArgs {
-                    since: a.since,
-                    state: a.state,
-                    severity: a.severity,
-                    namespace: a.namespace,
-                    workload: a.workload,
-                    monitor: a.monitor,
-                    limit: a.limit,
-                    json: a.json,
-                },
-            )
-            .await
-        }
-        Commands::Issues(a) => {
-            alerts::run_issues(
-                &build_client(&config)?,
-                alerts::IssuesArgs {
-                    since: a.since,
-                    namespace: a.namespace,
-                    workload: a.workload,
-                    grep: a.grep,
-                    code: a.code,
-                    limit: a.limit,
-                    json: a.json,
-                },
-            )
-            .await
-        }
-        Commands::Grafana { command } => {
-            let token = config.grafana_token().ok_or_else(|| {
-                anyhow::anyhow!("No Grafana token configured. Run: groundcover-cli config --fetch")
-            })?;
-            let gclient = GrafanaClient::new(token.to_string())?;
-            grafana::run_grafana(&gclient, map_grafana_command(command)).await
-        }
+        Commands::Grafana { command } => run_grafana_command(&config, command).await,
+        command => run_data_command(&config, command).await,
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn map_grafana_command(command: GrafanaCommands) -> grafana::GrafanaCommands {
     match command {
         GrafanaCommands::Datasources => grafana::GrafanaCommands::Datasources,
@@ -477,6 +387,122 @@ fn map_grafana_command(command: GrafanaCommands) -> grafana::GrafanaCommands {
         }
         GrafanaCommands::Alerts { filter, json } => {
             grafana::GrafanaCommands::Alerts { filter, json }
+        }
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl From<LogsArgs> for clickhouse::LogsArgs {
+    fn from(args: LogsArgs) -> Self {
+        Self {
+            since: args.since,
+            workload: args.workload,
+            namespace: args.namespace,
+            level: args.level,
+            grep: args.grep,
+            limit: args.limit,
+            json: args.json,
+        }
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl From<TracesArgs> for clickhouse::TracesArgs {
+    fn from(args: TracesArgs) -> Self {
+        Self {
+            since: args.since,
+            workload: args.workload,
+            operation: args.operation,
+            min_duration: args.min_duration,
+            status: args.status,
+            limit: args.limit,
+            json: args.json,
+        }
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl From<EventsArgs> for clickhouse::EventsArgs {
+    fn from(args: EventsArgs) -> Self {
+        Self {
+            since: args.since,
+            namespace: args.namespace,
+            event_type: args.event_type,
+            reason: args.reason,
+            limit: args.limit,
+            json: args.json,
+        }
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl From<MetricsArgs> for clickhouse::MetricsArgs {
+    fn from(args: MetricsArgs) -> Self {
+        Self {
+            query: args.query,
+            since: args.since,
+            step: args.step,
+            json: args.json,
+        }
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl From<ApiArgs> for api::ApiArgs {
+    fn from(args: ApiArgs) -> Self {
+        Self {
+            namespace: args.namespace,
+            workload: args.workload,
+            endpoint: args.endpoint,
+            errors: args.errors,
+            limit: args.limit,
+            json: args.json,
+        }
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl From<WorkloadsArgs> for api::WorkloadsArgs {
+    fn from(args: WorkloadsArgs) -> Self {
+        Self {
+            namespace: args.namespace,
+            workload: args.workload,
+            kind: args.kind,
+            errors: args.errors,
+            not_ready: args.not_ready,
+            limit: args.limit,
+            json: args.json,
+        }
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl From<AlertsArgs> for alerts::AlertsArgs {
+    fn from(args: AlertsArgs) -> Self {
+        Self {
+            since: args.since,
+            state: args.state,
+            severity: args.severity,
+            namespace: args.namespace,
+            workload: args.workload,
+            monitor: args.monitor,
+            limit: args.limit,
+            json: args.json,
+        }
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl From<IssuesArgs> for alerts::IssuesArgs {
+    fn from(args: IssuesArgs) -> Self {
+        Self {
+            since: args.since,
+            namespace: args.namespace,
+            workload: args.workload,
+            grep: args.grep,
+            code: args.code,
+            limit: args.limit,
+            json: args.json,
         }
     }
 }

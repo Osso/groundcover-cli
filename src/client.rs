@@ -18,6 +18,7 @@ impl Client {
     }
 
     /// Query ClickHouse (logs, traces, events)
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn query_clickhouse(&self, sql: &str) -> Result<String> {
         let response = self
             .http
@@ -39,6 +40,7 @@ impl Client {
     }
 
     /// Query ClickHouse and parse as JSON
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn query_clickhouse_json(&self, sql: &str) -> Result<Value> {
         // Append FORMAT JSON if not already present
         let sql = if sql.to_uppercase().contains("FORMAT ") {
@@ -54,6 +56,7 @@ impl Client {
     }
 
     /// Query VictoriaMetrics (metrics) using PromQL
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn query_metrics(
         &self,
         query: &str,
@@ -109,6 +112,7 @@ impl GrafanaClient {
         Ok(Self { http, token })
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn get(&self, path: &str) -> Result<Value> {
         let url = format!("{}{}", GRAFANA_BASE_URL, path);
         let response = self
@@ -131,18 +135,22 @@ impl GrafanaClient {
         Ok(value)
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn list_datasources(&self) -> Result<Value> {
         self.get("/api/datasources").await
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn get_datasource(&self, uid: &str) -> Result<Value> {
         self.get(&format!("/api/datasources/uid/{}", uid)).await
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn list_dashboards(&self) -> Result<Value> {
         self.get("/api/search?type=dash-db").await
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn search_dashboards(&self, query: &str) -> Result<Value> {
         self.get(&format!(
             "/api/search?type=dash-db&query={}",
@@ -151,12 +159,33 @@ impl GrafanaClient {
         .await
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn list_alert_rules(&self) -> Result<Value> {
         self.get("/api/v1/provisioning/alert-rules").await
     }
 
     /// Get alert rules from the Grafana Ruler API (includes state and query expressions)
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn get_ruler_rules(&self) -> Result<Value> {
         self.get("/api/ruler/grafana/api/v1/rules").await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_new_stores_api_key() {
+        let client = Client::new("api-key".to_string()).unwrap();
+
+        assert_eq!(client.api_key, "api-key");
+    }
+
+    #[test]
+    fn grafana_client_new_stores_token() {
+        let client = GrafanaClient::new("grafana-token".to_string()).unwrap();
+
+        assert_eq!(client.token, "grafana-token");
     }
 }

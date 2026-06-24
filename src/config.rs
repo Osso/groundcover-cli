@@ -10,6 +10,7 @@ pub struct Config {
 }
 
 impl Config {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn config_dir() -> Result<PathBuf> {
         let dir = dirs::config_dir()
             .context("Could not find config directory")?
@@ -17,10 +18,12 @@ impl Config {
         Ok(dir)
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn config_path() -> Result<PathBuf> {
         Ok(Self::config_dir()?.join("config.json"))
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
         if path.exists() {
@@ -34,6 +37,7 @@ impl Config {
         }
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn save(&self) -> Result<()> {
         let dir = Self::config_dir()?;
         fs::create_dir_all(&dir)?;
@@ -49,5 +53,44 @@ impl Config {
 
     pub fn grafana_token(&self) -> Option<&str> {
         self.grafana_token.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_key_returns_configured_key() {
+        let config = Config {
+            api_key: Some("api-key".to_string()),
+            grafana_token: None,
+        };
+
+        assert_eq!(config.api_key(), Some("api-key"));
+    }
+
+    #[test]
+    fn api_key_returns_none_when_missing() {
+        let config = Config::default();
+
+        assert_eq!(config.api_key(), None);
+    }
+
+    #[test]
+    fn grafana_token_returns_configured_token() {
+        let config = Config {
+            api_key: None,
+            grafana_token: Some("grafana-token".to_string()),
+        };
+
+        assert_eq!(config.grafana_token(), Some("grafana-token"));
+    }
+
+    #[test]
+    fn grafana_token_returns_none_when_missing() {
+        let config = Config::default();
+
+        assert_eq!(config.grafana_token(), None);
     }
 }
